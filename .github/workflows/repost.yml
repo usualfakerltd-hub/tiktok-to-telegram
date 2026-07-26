@@ -1,0 +1,44 @@
+name: TikTok to Telegram
+
+on:
+  schedule:
+    # Каждые 30 минут (время в UTC). GitHub часто задерживает запуск
+    # на 10-30 минут в часы пик — для репост-канала это не критично.
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}          # кнопка "Run workflow" для ручного запуска
+
+permissions:
+  contents: write                # нужно, чтобы коммитить state.json обратно
+
+concurrency:
+  group: repost                  # запуски не пересекаются, идут по очереди
+  cancel-in-progress: false
+
+jobs:
+  repost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          TIKTOK_USERS: ${{ secrets.TIKTOK_USERS }}
+          # MAX_PER_RUN: '5'     # можно раскомментировать и поменять
+        run: python bot.py
+
+      - name: Commit state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --quiet --cached || git commit -m "update state [skip ci]"
+          git push
