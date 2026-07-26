@@ -2,7 +2,7 @@
 """
 Репостер TikTok -> Telegram.
 Тянет новые видео с TikTok-аккаунтов и постит в Telegram-канал
-вместе с описанием (хэштеги вырезаются).
+вместе с описанием (хэштеги вырезаются, ссылка на источник не добавляется).
 """
 
 import json
@@ -24,7 +24,6 @@ USERS = [
 ]
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
-INCLUDE_LINK = os.environ.get("INCLUDE_LINK", "1") == "1"
 
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -40,7 +39,10 @@ def clean_caption(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = "\n".join(ln.strip() for ln in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    text = text.strip()
+    if len(text) > TG_CAPTION_LIMIT:
+        text = text[: TG_CAPTION_LIMIT - 1].rstrip() + "…"
+    return text
 
 
 def load_state() -> dict:
@@ -84,24 +86,11 @@ def download(url: str):
     return path, clean_caption(raw)
 
 
-def build_text(caption: str, source_url: str) -> str:
-    if not INCLUDE_LINK:
-        return caption[:TG_CAPTION_LIMIT]
-    tail = f"\n\n{source_url}"
-    room = TG_CAPTION_LIMIT - len(tail)
-    if not caption:
-        return source_url
-    if len(caption) > room:
-        caption = caption[: room - 1].rstrip() + "…"
-    return caption + tail
-
-
-def send_video(path: str, caption: str, source_url: str) -> bool:
-    text = build_text(caption, source_url)
+def send_video(path: str, caption: str) -> bool:
     with open(path, "rb") as f:
         r = requests.post(
             f"{TG_API}/sendVideo",
-            data={"chat_id": CHANNEL_ID, "caption": text, "supports_streaming": True},
+            data={"chat_id": CHANNEL_ID, "caption": caption, "supports_streaming": True},
             files={"video": f},
             timeout=180,
         )
@@ -144,18 +133,13 @@ def process_user(user: str, state: dict) -> None:
 
         size = os.path.getsize(path)
         if size > TG_VIDEO_LIMIT:
-            print(f"  ! слишком большое ({size // 1024 // 1024} МБ) — шлём ссылкой")
-            requests.post(
-                f"{TG_API}/sendMessage",
-                data={"chat_id": CHANNEL_ID, "text": v["url"]},
-                timeout=60,
-            )
+            print(f"  ! слишком большое ({size // 1024 // 1024} МБ) — пропускаем")
             state.setdefault(user, []).append(v["id"])
             save_state(state)
             os.remove(path)
             continue
 
-        if send_video(path, caption, v["url"]):
+        if send_video(path, caption):
             state.setdefault(user, []).append(v["id"])
             save_state(state)
         os.remove(path)
