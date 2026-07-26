@@ -2,7 +2,9 @@
 """
 Репостер TikTok -> Telegram.
 
-Тянет новые видео с указанных TikTok-аккаунтов и постит их в Telegram-канал.
+Тянет новые видео с указанных TikTok-аккаунтов и постит их в Telegram-канал
+вместе с описанием (хэштеги вырезаются).
+
 Запускается по расписанию через GitHub Actions, состояние (какие видео уже
 отправлены) хранит в файле state.json прямо в репозитории.
 """
@@ -10,6 +12,7 @@
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 
@@ -26,9 +29,23 @@ USERS = [                                  # один или несколько 
 ]
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))   # максимум видео за один запуск
+INCLUDE_LINK = os.environ.get("INCLUDE_LINK", "1") == "1"   # добавлять ссылку на оригинал
+
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TG_VIDEO_LIMIT = 50 * 1024 * 1024          # лимит бота на sendVideo ~50 МБ
+TG_CAPTION_LIMIT = 1024                    # лимит длины подписи к видео
+
+HASHTAG_RE = re.compile(r"#[^\s#]+")
+
+
+def clean_caption(text: str) -> str:
+    """Убирает хэштеги и приводит в порядок то, что после них осталось."""
+    text = HASHTAG_RE.sub("", text or "")
+    text = re.sub(r"[ \t]{2,}", " ", text)          # двойные пробелы
+    text = "\n".join(ln.strip() for ln in text.split("\n"))
+    text = re.sub(r"\n{3,}", "\n\n", text)          # пустые строки подряд
+    return text.strip()
 
 
 def load_state() -> dict:
@@ -59,7 +76,7 @@ def list_videos(user: str) -> list[dict]:
 
 
 def download(url: str) -> tuple[str, str]:
-    """Скачивает видео без вотермарки. Возвращает (путь_к_файлу, описание)."""
+    """Скачивает видео без вотермарки. Возвращает (путь_к_файлу, чистое_описание)."""
     tmp = tempfile.mkdtemp()
     opts = {
         "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
@@ -70,15 +87,25 @@ def download(url: str) -> tuple[str, str]:
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
-    caption = (info.get("description") or "").strip()
-    return path, caption
+    raw = info.get("description") or info.get("title") or ""
+    return path, clean_caption(raw)
+
+
+def build_text(caption: str, source_url: str) -> str:
+    """Собирает подпись к посту с учётом лимита Telegram."""
+    if not INCLUDE_LINK:
+        return caption[:TG_CAPTION_LIMIT]
+    tail = f"\n\n{source_url}"
+    room = TG_CAPTION_LIMIT - len(tail)
+    if not caption:
+        return source_url
+    if len(caption) > room:
+        caption = caption[: room - 1].rstrip() + "…"
+    return caption + tail
 
 
 def send_video(path: str, caption: str, source_url: str) -> bool:
-    text = caption[:900]
-    if text:
-        text += "\n\n"
-    text += source_url
+    text = build_text(caption, source_url)
     with open(path, "rb") as f:
         r = requests.post(
             f"{TG_API}/sendVideo",
