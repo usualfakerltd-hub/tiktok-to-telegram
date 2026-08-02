@@ -20,6 +20,7 @@ import pathlib
 import re
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import requests
@@ -30,6 +31,8 @@ DEFAULT_CHANNEL = os.environ.get("CHANNEL_ID", "")
 KEEP_TAGS_DEFAULT = os.environ.get("KEEP_TAGS", "0") == "1"
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
+# Страховка: видео старше этого числа дней не постим никогда.
+MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -37,8 +40,10 @@ TG_VIDEO_LIMIT = 50 * 1024 * 1024
 TG_CAPTION_LIMIT = 1024
 
 HASHTAG_RE = re.compile(r"#\w+")
-HASHTAG_CAP_RE = re.compile(r"#(\w+)")
+HASHTAG_CAP_RE = re.compile(r"#((?=\w*[^\W\d])\w+)")
 MENTION_RE = re.compile(r"(?<![\w@.])@([A-Za-z0-9_](?:[A-Za-z0-9_.]*[A-Za-z0-9_])?)")
+# yt-dlp подставляет такой заголовок, когда описания нет — это не текст поста
+PLACEHOLDER_RE = re.compile(r"^TikTok video #\d+$", re.IGNORECASE)
 
 
 def parse_users(raw: str) -> list:
@@ -102,6 +107,18 @@ def linkify(escaped: str) -> str:
     return MENTION_RE.sub(mention, HASHTAG_CAP_RE.sub(tag, escaped))
 
 
+def is_too_old(video_id: str) -> bool:
+    """В id видео TikTok зашита дата публикации (старшие 32 бита)."""
+    try:
+        ts = int(video_id) >> 32
+        dt = datetime.fromtimestamp(ts, timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        return False
+    if dt.year < 2016:
+        return False          # id непохож на настоящий — не фильтруем
+    return (datetime.now(timezone.utc) - dt) > timedelta(days=MAX_AGE_DAYS)
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -139,7 +156,10 @@ def download(url: str, keep_tags: bool):
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
-    raw = info.get("description") or info.get("title") or ""
+    raw = info.get("description") or ""
+    if not raw.strip():
+        title = (info.get("title") or "").strip()
+        raw = "" if PLACEHOLDER_RE.match(title) else title
     return path, clean_caption(raw, keep_tags)
 
 
@@ -185,6 +205,12 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
         return
 
     for v in new:
+        if is_too_old(v["id"]):
+            print(f"[{user}] {v['id']} старее {MAX_AGE_DAYS} дн. — пропускаем")
+            state.setdefault(user, []).append(v["id"])
+            save_state(state)
+            continue
+
         print(f"[{user}] новое видео {v['id']} -> {channel}")
         try:
             path, caption = download(v["url"], keep_tags)
