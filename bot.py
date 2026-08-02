@@ -37,6 +37,13 @@ MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
 # DEBUG_DESC=1 — печатать сырое описание в лог (для диагностики переносов строк)
 DEBUG_DESC = os.environ.get("DEBUG_DESC", "0") == "1"
+# Разбивать длинные описания на абзацы (короткие не трогаются).
+PARAGRAPHS = os.environ.get("PARAGRAPHS", "1") == "1"
+PARA_MIN = int(os.environ.get("PARA_MIN", "400"))    # с какой длины разбивать
+PARA_CHUNK = int(os.environ.get("PARA_CHUNK", "320"))  # целевой размер абзаца
+# Перечень ингредиентов («450 г води») раскладывать в столбик.
+COLUMNS = os.environ.get("COLUMNS", "1") == "1"
+COLUMNS_MIN = int(os.environ.get("COLUMNS_MIN", "3"))  # от скольких позиций считать списком
 
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -47,6 +54,15 @@ TG_TEXT_LIMIT = 4096         # отдельное сообщение
 HASHTAG_RE = re.compile(r"#\w+")
 HASHTAG_CAP_RE = re.compile(r"#((?=\w*[^\W\d])\w+)")
 MENTION_RE = re.compile(r"(?<![\w@.])@([A-Za-z0-9_](?:[A-Za-z0-9_.]*[A-Za-z0-9_])?)")
+SENT_RE = re.compile(r"(?<=[.!?])\s+")
+# <число> <единица> — маркер позиции в списке ингредиентов.
+# Предлоги перед числом («на 4 шт») не считаем началом позиции.
+ING_UNITS = r"(?:г|кг|мл|л|шт|ст\.?\s?л|ч\.?\s?л|зубчик\w*|склянк\w*)"
+ING_RE = re.compile(
+    r"(?<!\bна)(?<!\bпо)(?<!\bдо)\s+(?=\d+(?:[.,/-]\d+)?\s+"
+    + ING_UNITS
+    + r"\b(?!\s+(?:на|для|у|в)\b))"   # «120 г на кожну» — не позиция списка
+)
 # yt-dlp подставляет такой заголовок, когда описания нет — это не текст поста
 PLACEHOLDER_RE = re.compile(r"^TikTok video #\d+$", re.IGNORECASE)
 
@@ -88,6 +104,11 @@ def clean_caption(text: str, keep_tags: bool) -> str:
     text = text or ""
     if not keep_tags:
         text = HASHTAG_RE.sub("", text)
+    # TikTok отдаёт описание одной строкой, подставляя неразрывные пробелы
+    # там, где в оригинале были переносы. Приводим их к обычным пробелам.
+    text = text.replace("\xa0", " ").replace("\r", "\n")
+    # Указатели-эмодзи в оригинале начинают новую строку — восстанавливаем.
+    text = re.sub(r"\s*(?=👉)", "\n", text)
     text = re.sub(r"[ \t]+([,.:;!?])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = "\n".join(ln.strip() for ln in text.split("\n"))
@@ -95,7 +116,45 @@ def clean_caption(text: str, keep_tags: bool) -> str:
     text = text.strip()
     if len(text) > TG_TEXT_LIMIT:
         text = text[: TG_TEXT_LIMIT - 1].rstrip() + "…"
-    return text
+    return columnize(paragraphize(text))
+
+
+def _split_long(block: str) -> list:
+    """Режет длинный блок на куски по границам предложений."""
+    if len(block) <= PARA_CHUNK * 1.4:
+        return [block]
+    chunks, cur = [], ""
+    for sent in SENT_RE.split(block):
+        if cur and len(cur) + len(sent) + 1 > PARA_CHUNK:
+            chunks.append(cur.strip())
+            cur = sent
+        else:
+            cur = f"{cur} {sent}".strip()
+    if cur.strip():
+        chunks.append(cur.strip())
+    return chunks
+
+
+def paragraphize(text: str) -> str:
+    """Длинное описание разбивает на абзацы, короткое оставляет как есть."""
+    if not PARAGRAPHS or not text or len(text) <= PARA_MIN:
+        return text
+    out = []
+    for block in [b.strip() for b in text.split("\n") if b.strip()]:
+        out.extend(_split_long(block))
+    return "\n\n".join(out)
+
+
+def columnize(text: str) -> str:
+    """Перечень ингредиентов раскладывает в столбик — если это правда перечень."""
+    if not COLUMNS or not text:
+        return text
+    out = []
+    for para in text.split("\n\n"):
+        if len(ING_RE.findall(para)) >= COLUMNS_MIN:
+            para = ING_RE.sub("\n", para)
+        out.append(para)
+    return "\n\n".join(out)
 
 
 def linkify(escaped: str) -> str:
