@@ -32,6 +32,7 @@ END_MARKERS = os.environ.get(
     "|Посилання на це відео|Ссылка на этот",
 ).split("|")
 CTA_TEXT = os.environ.get("CTA_TEXT", "Дивитись зараз")
+CTA_EMOJI = os.environ.get("CTA_EMOJI", "▶️")
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
 SKIP_SHORTS = os.environ.get("SKIP_SHORTS", "1") == "1"
@@ -192,6 +193,19 @@ def is_too_old(published: str) -> bool:
     return (datetime.now(timezone.utc) - dt) > timedelta(days=MAX_AGE_DAYS)
 
 
+def best_thumb(video_id: str, fallback: str) -> str:
+    """Подбирает превью максимального качества. maxres/hq720 идут 16:9 без полос."""
+    for name in ("maxresdefault.jpg", "hq720.jpg", "sddefault.jpg"):
+        url = f"https://i.ytimg.com/vi/{video_id}/{name}"
+        try:
+            r = requests.head(url, headers=HEADERS, timeout=15)
+            if r.status_code == 200:
+                return url
+        except Exception:
+            continue
+    return fallback
+
+
 def is_short(video_id: str) -> bool:
     """Shorts отдают 200 по адресу /shorts/<id>, обычные видео — редирект."""
     try:
@@ -209,7 +223,8 @@ def is_short(video_id: str) -> bool:
 
 def build_caption(title: str, desc: str, url: str) -> str:
     separators = 4
-    room = TG_CAPTION_LIMIT - len(title) - len(CTA_TEXT) - separators
+    reserve = len(CTA_EMOJI) * 2 + 8      # эмодзи телега считает за 2 символа
+    room = TG_CAPTION_LIMIT - len(title) - len(CTA_TEXT) - separators - reserve
 
     body = (desc or "").strip()
     if len(body) > room:
@@ -218,8 +233,9 @@ def build_caption(title: str, desc: str, url: str) -> str:
     parts = [f"<b>{html.escape(title)}</b>"]
     if body:
         parts.append(html.escape(body))
+    cta = f"{CTA_EMOJI} {CTA_TEXT}".strip()
     parts.append(
-        f'<a href="{html.escape(url, quote=True)}">{html.escape(CTA_TEXT)}</a>'
+        f'<b><a href="{html.escape(url, quote=True)}">{html.escape(cta)}</a></b>'
     )
     return "\n\n".join(parts)
 
@@ -292,7 +308,8 @@ def process_channel(handle: str, tg_channel: str, state: dict) -> None:
         caption = build_caption(
             v["title"], extract_description(v["description"]), v["url"]
         )
-        if send_post(tg_channel, v["thumb"], caption):
+        thumb = best_thumb(v["id"], v["thumb"])
+        if send_post(tg_channel, thumb, caption):
             state.setdefault(handle, []).append(v["id"])
             save_state(state)
 
