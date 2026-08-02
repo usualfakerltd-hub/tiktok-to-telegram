@@ -3,8 +3,8 @@
 Репостер YouTube -> Telegram.
 
 Берёт новые видео канала через открытый RSS-фид (без yt-dlp и без логина),
-отсеивает Shorts и постит в Telegram: превью, жирный заголовок,
-кусок описания и ссылка «Дивитись зараз».
+отсеивает Shorts и старые ролики, постит в Telegram: превью, жирный
+заголовок, кусок описания и ссылка «Дивитись зараз».
 
 Формат YT_CHANNELS:  @ник_канала:@телеграм_канал, @ник2:@канал2
 Состояние — в state_youtube.json (отдельно от TikTok-бота).
@@ -17,26 +17,36 @@ import pathlib
 import re
 import sys
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# Маркеры для вырезания куска описания:
-# берём текст ПОСЛЕ START_MARKER и ДО строки с END_MARKER.
-START_MARKER = os.environ.get("DESC_START", "on air.")
-END_MARKER = os.environ.get("DESC_END", "у соціальних мережах")
+# Маркеры: берём текст ПОСЛЕ начального и ДО строки с конечным.
+# Можно перечислить несколько через | (вертикальную черту).
+START_MARKERS = os.environ.get("DESC_START", "on air.|В ефірі каналу").split("|")
+END_MARKERS = os.environ.get(
+    "DESC_END",
+    "у соціальних мережах|в соцсетях|Ще більше про футбол|Еще больше про футбол"
+    "|Посилання на це відео|Ссылка на этот",
+).split("|")
 CTA_TEXT = os.environ.get("CTA_TEXT", "Дивитись зараз")
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
 SKIP_SHORTS = os.environ.get("SKIP_SHORTS", "1") == "1"
+# Страховка: ролики старше этого числа дней не постим никогда.
+MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 
 STATE_FILE = pathlib.Path("state_youtube.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TG_CAPTION_LIMIT = 1024
 
 HASHTAG_RE = re.compile(r"#\w+")
-CHANNEL_ID_RE = re.compile(r'"channelId":"(UC[\w-]{20,})"')
+RSS_LINK_RE = re.compile(
+    r'href="(https://www\.youtube\.com/feeds/videos\.xml\?channel_id=UC[\w-]+)"'
+)
+EXTERNAL_ID_RE = re.compile(r'"externalId":"(UC[\w-]{20,})"')
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -52,7 +62,6 @@ NS = {
 
 
 def parse_channels(raw: str) -> list:
-    """Разбирает '@ютуб:@телеграм, ...' в список пар."""
     result = []
     for item in raw.split(","):
         item = item.strip()
@@ -72,21 +81,37 @@ def extract_description(desc: str) -> str:
     """Вырезает содержательный кусок описания между маркерами."""
     text = desc or ""
 
-    idx = text.find(START_MARKER)
-    if idx != -1:
-        text = text[idx + len(START_MARKER):]
-    else:
-        alt = text.find("В ефірі каналу")
-        if alt != -1:
-            nl = text.find("\n", alt)
-            text = text[nl:] if nl != -1 else text[alt:]
+    # 1) отрезаем всё до маркера начала (там обычно реклама)
+    for marker in START_MARKERS:
+        marker = marker.strip()
+        if not marker:
+            continue
+        idx = text.find(marker)
+        if idx != -1:
+            cut = idx + len(marker)
+            # если маркер — начало строки, режем до конца этой строки
+            nl = text.find("\n", cut)
+            rest = text[cut:]
+            if rest.split("\n", 1)[0].strip() and marker == "В ефірі каналу":
+                rest = text[nl:] if nl != -1 else rest
+            text = rest
+            break
 
-    end = text.find(END_MARKER)
-    if end != -1:
-        line_start = text.rfind("\n", 0, end)
-        text = text[: line_start if line_start != -1 else end]
+    # 2) отрезаем всё от маркера конца (контакты, соцсети, ссылки)
+    cut_at = len(text)
+    for marker in END_MARKERS:
+        marker = marker.strip()
+        if not marker:
+            continue
+        pos = text.find(marker)
+        if pos != -1:
+            line_start = text.rfind("\n", 0, pos)
+            cut_at = min(cut_at, line_start if line_start != -1 else pos)
+    text = text[:cut_at]
 
+    # 3) чистим хэштеги, ссылки и мусор
     text = HASHTAG_RE.sub("", text)
+    text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"[ \t]+([,.:;!?])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = "\n".join(ln.strip() for ln in text.split("\n"))
@@ -106,24 +131,28 @@ def save_state(state: dict) -> None:
     )
 
 
-def resolve_channel_id(handle: str) -> str:
-    """Превращает @ник в внутренний id канала (UC...), нужный для RSS."""
-    if handle.startswith("UC") and len(handle) > 20:
-        return handle          # уже готовый id
+def find_feed_url(handle: str) -> str:
+    """Ищет адрес RSS канала — берём его прямо со страницы канала."""
     r = requests.get(
         f"https://www.youtube.com/@{handle}", headers=HEADERS, timeout=30
     )
     r.raise_for_status()
-    m = CHANNEL_ID_RE.search(r.text)
-    if not m:
-        raise RuntimeError("не нашёл channelId на странице канала")
-    return m.group(1)
+    page = r.text
+
+    m = RSS_LINK_RE.search(page)
+    if m:
+        return m.group(1)
+
+    m = EXTERNAL_ID_RE.search(page)
+    if m:
+        return f"https://www.youtube.com/feeds/videos.xml?channel_id={m.group(1)}"
+
+    raise RuntimeError("не нашёл адрес RSS на странице канала")
 
 
-def fetch_feed(channel_id: str) -> list:
-    """Последние ~15 видео канала из RSS. Новые идут первыми."""
-    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    r = requests.get(url, headers=HEADERS, timeout=30)
+def fetch_feed(feed_url: str) -> list:
+    """Последние ~15 видео канала. Новые идут первыми."""
+    r = requests.get(feed_url, headers=HEADERS, timeout=30)
     r.raise_for_status()
     root = ET.fromstring(r.content)
 
@@ -144,11 +173,23 @@ def fetch_feed(channel_id: str) -> list:
                 "id": vid,
                 "title": (entry.findtext("atom:title", "", NS) or "").strip(),
                 "description": desc or "",
+                "published": entry.findtext("atom:published", "", NS) or "",
                 "thumb": thumb or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
                 "url": f"https://www.youtube.com/watch?v={vid}",
             }
         )
     return items
+
+
+def is_too_old(published: str) -> bool:
+    """True, если ролик старше MAX_AGE_DAYS. Защита от заливки архива."""
+    if not published:
+        return False
+    try:
+        dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - dt) > timedelta(days=MAX_AGE_DAYS)
 
 
 def is_short(video_id: str) -> bool:
@@ -167,7 +208,6 @@ def is_short(video_id: str) -> bool:
 
 
 def build_caption(title: str, desc: str, url: str) -> str:
-    """Собирает подпись в HTML с учётом лимита Telegram."""
     separators = 4
     room = TG_CAPTION_LIMIT - len(title) - len(CTA_TEXT) - separators
 
@@ -200,7 +240,6 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
 
     print(f"  ! sendPhoto не прошёл: {r.text[:250]}", file=sys.stderr)
 
-    # запасной путь: текстом (превью подтянет сама телега по ссылке)
     r2 = requests.post(
         f"{TG_API}/sendMessage",
         data={"chat_id": tg_channel, "text": caption, "parse_mode": "HTML"},
@@ -214,8 +253,8 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
 
 def process_channel(handle: str, tg_channel: str, state: dict) -> None:
     try:
-        channel_id = resolve_channel_id(handle)
-        videos = fetch_feed(channel_id)
+        feed_url = find_feed_url(handle)
+        videos = fetch_feed(feed_url)
     except Exception as e:
         print(f"[{handle}] не удалось получить фид: {e}", file=sys.stderr)
         return
@@ -237,6 +276,12 @@ def process_channel(handle: str, tg_channel: str, state: dict) -> None:
         return
 
     for v in new:
+        if is_too_old(v["published"]):
+            print(f"[{handle}] {v['id']} старее {MAX_AGE_DAYS} дн. — пропускаем")
+            state.setdefault(handle, []).append(v["id"])
+            save_state(state)
+            continue
+
         if SKIP_SHORTS and is_short(v["id"]):
             print(f"[{handle}] {v['id']} — Shorts, пропускаем")
             state.setdefault(handle, []).append(v["id"])
