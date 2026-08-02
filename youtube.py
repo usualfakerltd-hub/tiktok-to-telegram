@@ -221,6 +221,38 @@ def is_short(video_id: str) -> bool:
         return False
 
 
+def paragraphize(text: str) -> str:
+    """Разбивает описание на 2-4 абзаца в зависимости от объёма."""
+    if not text:
+        return ""
+
+    # если автор уже разбил на 2-4 абзаца — оставляем как есть
+    existing = [b.strip() for b in text.split("\n\n") if b.strip()]
+    if 2 <= len(existing) <= 4:
+        return "\n\n".join(existing)
+
+    lines = [ln.strip() for ln in text.replace("\n\n", "\n").split("\n") if ln.strip()]
+    if len(lines) <= 2:
+        return "\n".join(lines)
+
+    total = sum(len(ln) for ln in lines)
+    if total < 250:
+        n = 2
+    elif total < 550:
+        n = 3
+    else:
+        n = 4
+    n = min(n, len(lines))
+
+    base, extra = divmod(len(lines), n)
+    groups, i = [], 0
+    for k in range(n):
+        size = base + (1 if k < extra else 0)
+        groups.append("\n".join(lines[i:i + size]))
+        i += size
+    return "\n\n".join(g for g in groups if g)
+
+
 def build_caption(title: str, desc: str, url: str) -> str:
     separators = 4
     reserve = len(CTA_EMOJI) * 2 + 8      # эмодзи телега считает за 2 символа
@@ -229,14 +261,14 @@ def build_caption(title: str, desc: str, url: str) -> str:
     body = (desc or "").strip()
     if len(body) > room:
         body = body[: max(room - 1, 0)].rstrip() + "…"
+    body = paragraphize(body)
 
-    parts = [f"<b>{html.escape(title)}</b>"]
+    link = html.escape(url, quote=True)
+    parts = [f'<b><a href="{link}">{html.escape(title)}</a></b>']
     if body:
         parts.append(html.escape(body))
     cta = f"{CTA_EMOJI} {CTA_TEXT}".strip()
-    parts.append(
-        f'<b><a href="{html.escape(url, quote=True)}">{html.escape(cta)}</a></b>'
-    )
+    parts.append(f'<b><a href="{link}">{html.escape(cta)}</a></b>')
     return "\n\n".join(parts)
 
 
