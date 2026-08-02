@@ -35,6 +35,8 @@ MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
 MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 # Сколько последних id помнить по каждому аккаунту (чтобы файл не разрастался).
 KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
+# DEBUG_DESC=1 — печатать сырое описание в лог (для диагностики переносов строк)
+DEBUG_DESC = os.environ.get("DEBUG_DESC", "0") == "1"
 
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -177,6 +179,11 @@ def download(url: str, keep_tags: bool):
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
     raw = info.get("description") or ""
+    if DEBUG_DESC:
+        print("  --- сырое описание (repr, первые 600 символов) ---")
+        print("  " + repr(raw[:600]))
+        print(f"  переносов строк в описании: {raw.count(chr(10))}")
+        print("  --- конец ---")
     if not raw.strip():
         title = (info.get("title") or "").strip()
         raw = "" if PLACEHOLDER_RE.match(title) else title
