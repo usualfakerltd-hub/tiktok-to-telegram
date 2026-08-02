@@ -33,6 +33,9 @@ END_MARKERS = os.environ.get(
 ).split("|")
 CTA_TEXT = os.environ.get("CTA_TEXT", "ДИВИТИСЬ ЗАРАЗ")
 CTA_EMOJI = os.environ.get("CTA_EMOJI", "▶️")
+# Режим описания: markers — резать по маркерам, first — только первый абзац,
+# full — брать всё описание целиком.
+DESC_MODE_DEFAULT = os.environ.get("DESC_MODE", "markers")
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
 SKIP_SHORTS = os.environ.get("SKIP_SHORTS", "1") == "1"
@@ -68,19 +71,34 @@ def parse_channels(raw: str) -> list:
         item = item.strip()
         if not item or ":" not in item:
             continue
-        yt, tg = item.split(":", 1)
-        yt, tg = yt.strip().lstrip("@"), tg.strip()
+        parts = item.split(":")
+        yt = parts[0].strip().lstrip("@")
+        tg = parts[1].strip() if len(parts) > 1 else ""
+        mode = parts[2].strip().lower() if len(parts) > 2 else DESC_MODE_DEFAULT
+        if mode not in ("markers", "first", "full"):
+            mode = DESC_MODE_DEFAULT
         if yt and tg:
-            result.append((yt, tg))
+            result.append((yt, tg, mode))
     return result
 
 
 CHANNELS = parse_channels(os.environ.get("YT_CHANNELS", ""))
 
 
-def extract_description(desc: str) -> str:
-    """Вырезает содержательный кусок описания между маркерами."""
+def extract_description(desc: str, mode: str = "markers") -> str:
+    """Достаёт нужный кусок описания в зависимости от режима канала."""
     text = desc or ""
+
+    if mode == "first":
+        # только первый абзац — до первой пустой строки
+        for block in text.split("\n\n"):
+            if block.strip():
+                text = block
+                break
+        return _tidy(text)
+
+    if mode == "full":
+        return _tidy(text)
 
     # 1) отрезаем всё до маркера начала (там обычно реклама)
     for marker in START_MARKERS:
@@ -111,7 +129,12 @@ def extract_description(desc: str) -> str:
     text = text[:cut_at]
 
     # 3) чистим хэштеги, ссылки и мусор
-    text = HASHTAG_RE.sub("", text)
+    return _tidy(text)
+
+
+def _tidy(text: str) -> str:
+    """Убирает хэштеги, ссылки и лишние пробелы."""
+    text = HASHTAG_RE.sub("", text or "")
     text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"[ \t]+([,.:;!?])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -299,7 +322,7 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
     return bool(ok)
 
 
-def process_channel(handle: str, tg_channel: str, state: dict) -> None:
+def process_channel(handle: str, tg_channel: str, mode: str, state: dict) -> None:
     try:
         feed_url = find_feed_url(handle)
         videos = fetch_feed(feed_url)
@@ -338,7 +361,7 @@ def process_channel(handle: str, tg_channel: str, state: dict) -> None:
 
         print(f"[{handle}] новое видео {v['id']} -> {tg_channel}")
         caption = build_caption(
-            v["title"], extract_description(v["description"]), v["url"]
+            v["title"], extract_description(v["description"], mode), v["url"]
         )
         thumb = best_thumb(v["id"], v["thumb"])
         if send_post(tg_channel, thumb, caption):
@@ -351,8 +374,8 @@ def main() -> None:
         print("YT_CHANNELS не задан — нечего делать")
         return
     state = load_state()
-    for handle, tg_channel in CHANNELS:
-        process_channel(handle, tg_channel, state)
+    for handle, tg_channel, mode in CHANNELS:
+        process_channel(handle, tg_channel, mode, state)
     save_state(state)
     print("готово")
 
