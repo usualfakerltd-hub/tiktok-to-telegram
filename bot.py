@@ -33,6 +33,8 @@ KEEP_TAGS_DEFAULT = os.environ.get("KEEP_TAGS", "0") == "1"
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
 # Страховка: видео старше этого числа дней не постим никогда.
 MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
+# Сколько последних id помнить по каждому аккаунту (чтобы файл не разрастался).
+KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
 
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -125,9 +127,26 @@ def load_state() -> dict:
     return {}
 
 
+def remember(state: dict, user: str, video_id: str) -> None:
+    """Кладёт id наверх списка и подрезает историю."""
+    lst = state.setdefault(user, [])
+    lst.insert(0, video_id)
+    del lst[KEEP_HISTORY:]
+
+
 def save_state(state: dict) -> None:
+    """Пишет файл: аккаунты в обратном порядке добавления — новые сверху."""
+    order = [u for u, _, _ in USERS]
+    ordered = {}
+    for user in reversed(order):
+        if user in state:
+            ordered[user] = state[user]
+    for user in state:              # всё, чего нет в настройках, — в конец
+        if user not in ordered:
+            ordered[user] = state[user]
+
     STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(ordered, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
@@ -194,7 +213,7 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
         return
 
     if user not in state:
-        state[user] = [v["id"] for v in videos]
+        state[user] = [v["id"] for v in videos][:KEEP_HISTORY]
         print(f"[{user}] первый запуск — засеяли {len(videos)} видео, посты не шлём")
         return
 
@@ -203,9 +222,7 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
     # Старьё отбраковываем пачкой сразу — оно не должно съедать лимит на посты.
     stale = [v for v in unseen if is_too_old(v["id"])]
     if stale:
-        for v in stale:
-            state.setdefault(user, []).append(v["id"])
-        save_state(state)
+        # В файл не пишем: возраст считается из самого id, запросов не требует.
         print(f"[{user}] старее {MAX_AGE_DAYS} дн. — пропущено: {len(stale)}")
 
     new = [v for v in unseen if not is_too_old(v["id"])][:MAX_PER_RUN]
@@ -224,13 +241,13 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
         size = os.path.getsize(path)
         if size > TG_VIDEO_LIMIT:
             print(f"  ! слишком большое ({size // 1024 // 1024} МБ) — пропускаем")
-            state.setdefault(user, []).append(v["id"])
+            remember(state, user, v["id"])
             save_state(state)
             os.remove(path)
             continue
 
         if send_video(path, caption, channel, keep_tags):
-            state.setdefault(user, []).append(v["id"])
+            remember(state, user, v["id"])
             save_state(state)
         os.remove(path)
 
