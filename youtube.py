@@ -31,7 +31,7 @@ END_MARKERS = os.environ.get(
     "у соціальних мережах|в соцсетях|Ще більше про футбол|Еще больше про футбол"
     "|Посилання на це відео|Ссылка на этот",
 ).split("|")
-CTA_TEXT = os.environ.get("CTA_TEXT", "Дивитись зараз")
+CTA_TEXT = os.environ.get("CTA_TEXT", "ДИВИТИСЬ ЗАРАЗ")
 CTA_EMOJI = os.environ.get("CTA_EMOJI", "▶️")
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
