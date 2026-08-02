@@ -30,6 +30,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           TIKTOK_USERS: ${{ secrets.TIKTOK_USERS }}
+          DEBUG_DESC: '1'
         run: python bot.py
 
       - name: Run YouTube bot
