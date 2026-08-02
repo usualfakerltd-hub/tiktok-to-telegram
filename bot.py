@@ -1,45 +1,33 @@
 #!/usr/bin/env python3
 """
 Репостер TikTok -> Telegram.
-Каждому TikTok-аккаунту можно задать свой Telegram-канал.
-Формат TIKTOK_USERS:  ник1:@канал1, ник2:@канал2
-Если канал не указан — используется CHANNEL_ID.
+
+Каждому TikTok-аккаунту можно задать свой Telegram-канал и своё
+поведение с тегами.
+
+Формат TIKTOK_USERS:
+    ник:@канал              — поведение по умолчанию (из KEEP_TAGS)
+    ник:@канал:tags         — теги ОСТАВИТЬ и сделать ссылками
+    ник:@канал:notags       — теги ВЫРЕЗАТЬ
+
+KEEP_TAGS=1 — по умолчанию оставлять теги, KEEP_TAGS=0 — вырезать.
 """
 
+import html
 import json
 import os
 import pathlib
 import re
 import sys
 import tempfile
+from urllib.parse import quote
 
 import requests
 import yt_dlp
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DEFAULT_CHANNEL = os.environ.get("CHANNEL_ID", "")
-
-
-def parse_users(raw: str) -> list:
-    """Разбирает 'ник1:@канал1, ник2' в список пар (ник, канал)."""
-    result = []
-    for item in raw.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if ":" in item:
-            user, chan = item.split(":", 1)
-            user, chan = user.strip().lstrip("@"), chan.strip()
-        else:
-            user, chan = item.lstrip("@"), DEFAULT_CHANNEL
-        if not chan:
-            print(f"[{user}] не задан канал — пропускаем", file=sys.stderr)
-            continue
-        result.append((user, chan))
-    return result
-
-
-USERS = parse_users(os.environ["TIKTOK_USERS"])
+KEEP_TAGS_DEFAULT = os.environ.get("KEEP_TAGS", "0") == "1"
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
 
@@ -48,12 +36,49 @@ TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TG_VIDEO_LIMIT = 50 * 1024 * 1024
 TG_CAPTION_LIMIT = 1024
 
-HASHTAG_RE = re.compile(r"#[^\s#]+")
+HASHTAG_RE = re.compile(r"#\w+")
+HASHTAG_CAP_RE = re.compile(r"#(\w+)")
+MENTION_RE = re.compile(r"(?<![\w@.])@([A-Za-z0-9_](?:[A-Za-z0-9_.]*[A-Za-z0-9_])?)")
 
 
-def clean_caption(text: str) -> str:
-    """Убирает хэштеги и приводит в порядок то, что осталось."""
-    text = HASHTAG_RE.sub("", text or "")
+def parse_users(raw: str) -> list:
+    """Разбирает 'ник:@канал:tags, ник2:@канал2' в список (ник, канал, теги)."""
+    result = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+
+        keep = KEEP_TAGS_DEFAULT
+        parts = item.split(":")
+        if len(parts) >= 3:
+            flag = parts[2].strip().lower()
+            if flag in ("tags", "keep"):
+                keep = True
+            elif flag in ("notags", "strip"):
+                keep = False
+
+        if len(parts) >= 2:
+            user, chan = parts[0].strip().lstrip("@"), parts[1].strip()
+        else:
+            user, chan = parts[0].strip().lstrip("@"), DEFAULT_CHANNEL
+
+        if not chan:
+            print(f"[{user}] не задан канал — пропускаем", file=sys.stderr)
+            continue
+        result.append((user, chan, keep))
+    return result
+
+
+USERS = parse_users(os.environ["TIKTOK_USERS"])
+
+
+def clean_caption(text: str, keep_tags: bool) -> str:
+    """Чистит описание. Теги либо оставляет, либо вырезает."""
+    text = text or ""
+    if not keep_tags:
+        text = HASHTAG_RE.sub("", text)
+    text = re.sub(r"[ \t]+([,.:;!?])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = "\n".join(ln.strip() for ln in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -61,6 +86,20 @@ def clean_caption(text: str) -> str:
     if len(text) > TG_CAPTION_LIMIT:
         text = text[: TG_CAPTION_LIMIT - 1].rstrip() + "…"
     return text
+
+
+def linkify(escaped: str) -> str:
+    """Делает ссылки из #тегов (на страницу тега) и @упоминаний (на аккаунт)."""
+
+    def tag(m):
+        word = m.group(1)
+        return f'<a href="https://www.tiktok.com/tag/{quote(word)}">#{word}</a>'
+
+    def mention(m):
+        nick = m.group(1)
+        return f'<a href="https://www.tiktok.com/@{quote(nick)}">@{nick}</a>'
+
+    return MENTION_RE.sub(mention, HASHTAG_CAP_RE.sub(tag, escaped))
 
 
 def load_state() -> dict:
@@ -89,7 +128,7 @@ def list_videos(user: str) -> list:
     return videos
 
 
-def download(url: str):
+def download(url: str, keep_tags: bool):
     tmp = tempfile.mkdtemp()
     opts = {
         "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
@@ -101,16 +140,20 @@ def download(url: str):
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
     raw = info.get("description") or info.get("title") or ""
-    return path, clean_caption(raw)
+    return path, clean_caption(raw, keep_tags)
 
 
-def send_video(path: str, caption: str, channel: str) -> bool:
+def send_video(path: str, caption: str, channel: str, keep_tags: bool) -> bool:
+    data = {"chat_id": channel, "supports_streaming": True}
+    if keep_tags:
+        data["caption"] = linkify(html.escape(caption))
+        data["parse_mode"] = "HTML"
+    else:
+        data["caption"] = caption
+
     with open(path, "rb") as f:
         r = requests.post(
-            f"{TG_API}/sendVideo",
-            data={"chat_id": channel, "caption": caption, "supports_streaming": True},
-            files={"video": f},
-            timeout=180,
+            f"{TG_API}/sendVideo", data=data, files={"video": f}, timeout=180
         )
     ok = r.ok and r.json().get("ok")
     if not ok:
@@ -118,7 +161,7 @@ def send_video(path: str, caption: str, channel: str) -> bool:
     return bool(ok)
 
 
-def process_user(user: str, channel: str, state: dict) -> None:
+def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
     posted = set(state.get(user, []))
     try:
         videos = list_videos(user)
@@ -144,7 +187,7 @@ def process_user(user: str, channel: str, state: dict) -> None:
     for v in new:
         print(f"[{user}] новое видео {v['id']} -> {channel}")
         try:
-            path, caption = download(v["url"])
+            path, caption = download(v["url"], keep_tags)
         except Exception as e:
             print(f"  ! не скачалось: {e}", file=sys.stderr)
             continue
@@ -157,7 +200,7 @@ def process_user(user: str, channel: str, state: dict) -> None:
             os.remove(path)
             continue
 
-        if send_video(path, caption, channel):
+        if send_video(path, caption, channel, keep_tags):
             state.setdefault(user, []).append(v["id"])
             save_state(state)
         os.remove(path)
@@ -165,8 +208,8 @@ def process_user(user: str, channel: str, state: dict) -> None:
 
 def main() -> None:
     state = load_state()
-    for user, channel in USERS:
-        process_user(user, channel, state)
+    for user, channel, keep_tags in USERS:
+        process_user(user, channel, keep_tags, state)
     save_state(state)
     print("готово")
 
