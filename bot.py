@@ -198,19 +198,22 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
         print(f"[{user}] первый запуск — засеяли {len(videos)} видео, посты не шлём")
         return
 
-    new = [v for v in videos if v["id"] not in posted]
-    new = list(reversed(new))[:MAX_PER_RUN]
+    unseen = list(reversed([v for v in videos if v["id"] not in posted]))
+
+    # Старьё отбраковываем пачкой сразу — оно не должно съедать лимит на посты.
+    stale = [v for v in unseen if is_too_old(v["id"])]
+    if stale:
+        for v in stale:
+            state.setdefault(user, []).append(v["id"])
+        save_state(state)
+        print(f"[{user}] старее {MAX_AGE_DAYS} дн. — пропущено: {len(stale)}")
+
+    new = [v for v in unseen if not is_too_old(v["id"])][:MAX_PER_RUN]
     if not new:
         print(f"[{user}] новых видео нет")
         return
 
     for v in new:
-        if is_too_old(v["id"]):
-            print(f"[{user}] {v['id']} старее {MAX_AGE_DAYS} дн. — пропускаем")
-            state.setdefault(user, []).append(v["id"])
-            save_state(state)
-            continue
-
         print(f"[{user}] новое видео {v['id']} -> {channel}")
         try:
             path, caption = download(v["url"], keep_tags)
