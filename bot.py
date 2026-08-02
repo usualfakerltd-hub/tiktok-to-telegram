@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Репостер TikTok -> Telegram.
-Тянет новые видео с TikTok-аккаунтов и постит в Telegram-канал
-вместе с описанием (хэштеги вырезаются, ссылка на источник не добавляется).
+Каждому TikTok-аккаунту можно задать свой Telegram-канал.
+Формат TIKTOK_USERS:  ник1:@канал1, ник2:@канал2
+Если канал не указан — используется CHANNEL_ID.
 """
 
 import json
@@ -16,12 +17,29 @@ import requests
 import yt_dlp
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_ID = os.environ["CHANNEL_ID"]
-USERS = [
-    u.strip().lstrip("@")
-    for u in os.environ["TIKTOK_USERS"].split(",")
-    if u.strip()
-]
+DEFAULT_CHANNEL = os.environ.get("CHANNEL_ID", "")
+
+
+def parse_users(raw: str) -> list:
+    """Разбирает 'ник1:@канал1, ник2' в список пар (ник, канал)."""
+    result = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            user, chan = item.split(":", 1)
+            user, chan = user.strip().lstrip("@"), chan.strip()
+        else:
+            user, chan = item.lstrip("@"), DEFAULT_CHANNEL
+        if not chan:
+            print(f"[{user}] не задан канал — пропускаем", file=sys.stderr)
+            continue
+        result.append((user, chan))
+    return result
+
+
+USERS = parse_users(os.environ["TIKTOK_USERS"])
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
 
@@ -86,11 +104,11 @@ def download(url: str):
     return path, clean_caption(raw)
 
 
-def send_video(path: str, caption: str) -> bool:
+def send_video(path: str, caption: str, channel: str) -> bool:
     with open(path, "rb") as f:
         r = requests.post(
             f"{TG_API}/sendVideo",
-            data={"chat_id": CHANNEL_ID, "caption": caption, "supports_streaming": True},
+            data={"chat_id": channel, "caption": caption, "supports_streaming": True},
             files={"video": f},
             timeout=180,
         )
@@ -100,7 +118,7 @@ def send_video(path: str, caption: str) -> bool:
     return bool(ok)
 
 
-def process_user(user: str, state: dict) -> None:
+def process_user(user: str, channel: str, state: dict) -> None:
     posted = set(state.get(user, []))
     try:
         videos = list_videos(user)
@@ -124,7 +142,7 @@ def process_user(user: str, state: dict) -> None:
         return
 
     for v in new:
-        print(f"[{user}] новое видео {v['id']}")
+        print(f"[{user}] новое видео {v['id']} -> {channel}")
         try:
             path, caption = download(v["url"])
         except Exception as e:
@@ -139,7 +157,7 @@ def process_user(user: str, state: dict) -> None:
             os.remove(path)
             continue
 
-        if send_video(path, caption):
+        if send_video(path, caption, channel):
             state.setdefault(user, []).append(v["id"])
             save_state(state)
         os.remove(path)
@@ -147,8 +165,8 @@ def process_user(user: str, state: dict) -> None:
 
 def main() -> None:
     state = load_state()
-    for user in USERS:
-        process_user(user, state)
+    for user, channel in USERS:
+        process_user(user, channel, state)
     save_state(state)
     print("готово")
 
