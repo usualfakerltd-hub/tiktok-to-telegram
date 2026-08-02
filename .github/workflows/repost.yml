@@ -37,6 +37,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           YT_CHANNELS: ${{ secrets.YT_CHANNELS }}
+          MAX_AGE_DAYS: '60'
         run: python youtube.py
 
       - name: Commit state
