@@ -39,7 +39,8 @@ KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
 STATE_FILE = pathlib.Path("state.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TG_VIDEO_LIMIT = 50 * 1024 * 1024
-TG_CAPTION_LIMIT = 1024
+TG_CAPTION_LIMIT = 1024      # подпись к видео
+TG_TEXT_LIMIT = 4096         # отдельное сообщение
 
 HASHTAG_RE = re.compile(r"#\w+")
 HASHTAG_CAP_RE = re.compile(r"#((?=\w*[^\W\d])\w+)")
@@ -90,8 +91,8 @@ def clean_caption(text: str, keep_tags: bool) -> str:
     text = "\n".join(ln.strip() for ln in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()
-    if len(text) > TG_CAPTION_LIMIT:
-        text = text[: TG_CAPTION_LIMIT - 1].rstrip() + "…"
+    if len(text) > TG_TEXT_LIMIT:
+        text = text[: TG_TEXT_LIMIT - 1].rstrip() + "…"
     return text
 
 
@@ -182,13 +183,35 @@ def download(url: str, keep_tags: bool):
     return path, clean_caption(raw, keep_tags)
 
 
-def send_video(path: str, caption: str, channel: str, keep_tags: bool) -> bool:
-    data = {"chat_id": channel, "supports_streaming": True}
+def _format(text: str, keep_tags: bool) -> dict:
+    """Готовит поля текста: со ссылками на теги или обычным текстом."""
     if keep_tags:
-        data["caption"] = linkify(html.escape(caption))
-        data["parse_mode"] = "HTML"
-    else:
-        data["caption"] = caption
+        return {"text": linkify(html.escape(text)), "parse_mode": "HTML"}
+    return {"text": text}
+
+
+def send_text(channel: str, text: str, keep_tags: bool) -> bool:
+    body = _format(text, keep_tags)
+    data = {"chat_id": channel, "text": body["text"]}
+    if "parse_mode" in body:
+        data["parse_mode"] = body["parse_mode"]
+    r = requests.post(f"{TG_API}/sendMessage", data=data, timeout=60)
+    ok = r.ok and r.json().get("ok")
+    if not ok:
+        print(f"  ! текст не ушёл: {r.text[:250]}", file=sys.stderr)
+    return bool(ok)
+
+
+def send_video(path: str, caption: str, channel: str, keep_tags: bool) -> bool:
+    """Короткое описание идёт подписью, длинное — отдельным сообщением следом."""
+    split = len(caption) > TG_CAPTION_LIMIT
+
+    data = {"chat_id": channel, "supports_streaming": True}
+    if not split and caption:
+        body = _format(caption, keep_tags)
+        data["caption"] = body["text"]
+        if "parse_mode" in body:
+            data["parse_mode"] = body["parse_mode"]
 
     with open(path, "rb") as f:
         r = requests.post(
@@ -197,7 +220,12 @@ def send_video(path: str, caption: str, channel: str, keep_tags: bool) -> bool:
     ok = r.ok and r.json().get("ok")
     if not ok:
         print(f"  ! Telegram отклонил: {r.text[:300]}", file=sys.stderr)
-    return bool(ok)
+        return False
+
+    if split:
+        print(f"  описание длинное ({len(caption)}) — шлём отдельным сообщением")
+        send_text(channel, caption, keep_tags)
+    return True
 
 
 def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
