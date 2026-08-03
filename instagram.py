@@ -66,10 +66,7 @@ def clean_caption(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = "\n".join(ln.strip() for ln in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text)
-    text = text.strip()
-    if len(text) > TG_TEXT_LIMIT:
-        text = text[: TG_TEXT_LIMIT - 1].rstrip() + "…"
-    return text
+    return text.strip()
 
 
 def linkify(escaped: str) -> str:
@@ -124,6 +121,9 @@ def fetch_posts(user: str) -> list:
     r.raise_for_status()
     items = r.json()
 
+    if items:
+        print(f"  поля первого элемента: {sorted(items[0].keys())}")
+
     posts = []
     for it in items:
         pid = it.get("id") or it.get("shortCode")
@@ -146,6 +146,11 @@ def fetch_posts(user: str) -> list:
     # Порядок из ответа Apify ненадёжен: закреплённые посты вылезают вперёд.
     # Сортируем сами — новые первыми.
     posts.sort(key=lambda p: p["timestamp"] or "", reverse=True)
+
+    print(f"  получено постов: {len(posts)} (после сортировки, сверху новее)")
+    for p in posts:
+        print(f"    {p['id']}  {p['timestamp'] or 'ДАТЫ НЕТ':<28} {p['type']:<8} {p['url']}")
+
     return posts
 
 
@@ -190,20 +195,57 @@ def download(url: str, suffix: str) -> str:
     return path
 
 
+def chunk_text(text: str, limit: int = TG_TEXT_LIMIT - 100) -> list:
+    """Режет длинный текст на части по абзацам, затем по предложениям."""
+    if len(text) <= limit:
+        return [text]
+
+    parts, cur = [], ""
+    for para in text.split("\n\n"):
+        piece = para if not cur else f"{cur}\n\n{para}"
+        if len(piece) <= limit:
+            cur = piece
+            continue
+        if cur:
+            parts.append(cur)
+            cur = ""
+        # абзац сам по себе длиннее лимита — режем по предложениям
+        if len(para) > limit:
+            for sent in re.split(r"(?<=[.!?])\s+", para):
+                cand = sent if not cur else f"{cur} {sent}"
+                if len(cand) <= limit:
+                    cur = cand
+                else:
+                    if cur:
+                        parts.append(cur)
+                    cur = sent[:limit]
+        else:
+            cur = para
+    if cur:
+        parts.append(cur)
+    return parts
+
+
 def send_text(channel: str, text: str) -> bool:
-    r = requests.post(
-        f"{TG_API}/sendMessage",
-        data={
-            "chat_id": channel,
-            "text": linkify(html.escape(text)),
-            "parse_mode": "HTML",
-        },
-        timeout=60,
-    )
-    ok = r.ok and r.json().get("ok")
-    if not ok:
-        print(f"  ! текст не ушёл: {r.text[:250]}", file=sys.stderr)
-    return bool(ok)
+    parts = chunk_text(text)
+    if len(parts) > 1:
+        print(f"  текст длинный ({len(text)}) — шлём {len(parts)} частями")
+
+    all_ok = True
+    for part in parts:
+        r = requests.post(
+            f"{TG_API}/sendMessage",
+            data={
+                "chat_id": channel,
+                "text": linkify(html.escape(part)),
+                "parse_mode": "HTML",
+            },
+            timeout=60,
+        )
+        if not (r.ok and r.json().get("ok")):
+            print(f"  ! часть текста не ушла: {r.text[:250]}", file=sys.stderr)
+            all_ok = False
+    return all_ok
 
 
 def send_post(channel: str, post: dict) -> bool:
