@@ -142,6 +142,10 @@ def fetch_posts(user: str) -> list:
                 "images": it.get("images") or [],
             }
         )
+
+    # Порядок из ответа Apify ненадёжен: закреплённые посты вылезают вперёд.
+    # Сортируем сами — новые первыми.
+    posts.sort(key=lambda p: p["timestamp"] or "", reverse=True)
     return posts
 
 
