@@ -2,7 +2,7 @@ name: Instagram to Telegram
 
 on:
   schedule:
-    - cron: '15 */3 * * *'
+    - cron: '15 */5 * * *'
   workflow_dispatch: {}
 
 permissions:
