@@ -237,6 +237,11 @@ def download(url: str, keep_tags: bool):
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
+    meta = {
+        "width": info.get("width"),
+        "height": info.get("height"),
+        "duration": info.get("duration"),
+    }
     raw = info.get("description") or ""
     if DEBUG_DESC:
         print("  --- сырое описание (repr, первые 600 символов) ---")
@@ -246,7 +251,7 @@ def download(url: str, keep_tags: bool):
     if not raw.strip():
         title = (info.get("title") or "").strip()
         raw = "" if PLACEHOLDER_RE.match(title) else title
-    return path, clean_caption(raw, keep_tags)
+    return path, clean_caption(raw, keep_tags), meta
 
 
 def _format(text: str, keep_tags: bool) -> dict:
@@ -268,11 +273,16 @@ def send_text(channel: str, text: str, keep_tags: bool) -> bool:
     return bool(ok)
 
 
-def send_video(path: str, caption: str, channel: str, keep_tags: bool) -> bool:
+def send_video(path: str, caption: str, channel: str, keep_tags: bool,
+               meta: dict = None) -> bool:
     """Короткое описание идёт подписью, длинное — отдельным сообщением следом."""
     split = len(caption) > TG_CAPTION_LIMIT
 
     data = {"chat_id": channel, "supports_streaming": True}
+    # Без размеров Telegram подставляет свои и картинка выглядит сплющенной.
+    for key in ("width", "height", "duration"):
+        if meta and meta.get(key):
+            data[key] = int(meta[key])
     if not split and caption:
         body = _format(caption, keep_tags)
         data["caption"] = body["text"]
@@ -327,7 +337,7 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
     for v in new:
         print(f"[{user}] новое видео {v['id']} -> {channel}")
         try:
-            path, caption = download(v["url"], keep_tags)
+            path, caption, meta = download(v["url"], keep_tags)
         except Exception as e:
             print(f"  ! не скачалось: {e}", file=sys.stderr)
             continue
@@ -340,7 +350,7 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
             os.remove(path)
             continue
 
-        if send_video(path, caption, channel, keep_tags):
+        if send_video(path, caption, channel, keep_tags, meta):
             remember(state, user, v["id"])
             save_state(state)
         os.remove(path)
