@@ -77,8 +77,16 @@ def parse_channels(raw: str) -> list:
         mode = parts[2].strip().lower() if len(parts) > 2 else DESC_MODE_DEFAULT
         if mode not in ("markers", "first", "full"):
             mode = DESC_MODE_DEFAULT
+        # четвёртое поле: shorts — брать Shorts, noshorts — отсекать
+        skip_shorts = SKIP_SHORTS
+        if len(parts) > 3:
+            flag = parts[3].strip().lower()
+            if flag == "shorts":
+                skip_shorts = False
+            elif flag == "noshorts":
+                skip_shorts = True
         if yt and tg:
-            result.append((yt, tg, mode))
+            result.append((yt, tg, mode, skip_shorts))
     return result
 
 
@@ -322,7 +330,8 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
     return bool(ok)
 
 
-def process_channel(handle: str, tg_channel: str, mode: str, state: dict) -> None:
+def process_channel(handle: str, tg_channel: str, mode: str,
+                    skip_shorts: bool, state: dict) -> None:
     try:
         feed_url = find_feed_url(handle)
         videos = fetch_feed(feed_url)
@@ -353,7 +362,7 @@ def process_channel(handle: str, tg_channel: str, mode: str, state: dict) -> Non
             save_state(state)
             continue
 
-        if SKIP_SHORTS and is_short(v["id"]):
+        if skip_shorts and is_short(v["id"]):
             print(f"[{handle}] {v['id']} — Shorts, пропускаем")
             state.setdefault(handle, []).append(v["id"])
             save_state(state)
@@ -374,8 +383,8 @@ def main() -> None:
         print("YT_CHANNELS не задан — нечего делать")
         return
     state = load_state()
-    for handle, tg_channel, mode in CHANNELS:
-        process_channel(handle, tg_channel, mode, state)
+    for handle, tg_channel, mode, skip_shorts in CHANNELS:
+        process_channel(handle, tg_channel, mode, skip_shorts, state)
     save_state(state)
     print("готово")
 
