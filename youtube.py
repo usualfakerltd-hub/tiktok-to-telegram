@@ -31,7 +31,8 @@ END_MARKERS = os.environ.get(
     "у соціальних мережах|в соцсетях|Ще більше про футбол|Еще больше про футбол"
     "|Посилання на це відео|Ссылка на этот",
 ).split("|")
-CTA_TEXT = os.environ.get("CTA_TEXT", "ДИВИТИСЬ ЗАРАЗ")
+CTA_TEXT = os.environ.get("CTA_TEXT", "ДИВИТИСЬ ЗАРАЗ")          # ua
+CTA_TEXT_RU = os.environ.get("CTA_TEXT_RU", "СМОТРЕТЬ СЕЙЧАС")   # ru
 CTA_EMOJI = os.environ.get("CTA_EMOJI", "▶️")
 # Режим описания: markers — резать по маркерам, first — только первый абзац,
 # full — брать всё описание целиком.
@@ -85,8 +86,12 @@ def parse_channels(raw: str) -> list:
                 skip_shorts = False
             elif flag == "noshorts":
                 skip_shorts = True
+        # пятое поле: язык кнопки — ru или ua
+        cta = CTA_TEXT
+        if len(parts) > 4 and parts[4].strip().lower() == "ru":
+            cta = CTA_TEXT_RU
         if yt and tg:
-            result.append((yt, tg, mode, skip_shorts))
+            result.append((yt, tg, mode, skip_shorts, cta))
     return result
 
 
@@ -284,10 +289,11 @@ def paragraphize(text: str) -> str:
     return "\n\n".join(g for g in groups if g)
 
 
-def build_caption(title: str, desc: str, url: str) -> str:
+def build_caption(title: str, desc: str, url: str, cta_text: str = None) -> str:
+    cta_text = cta_text or CTA_TEXT
     separators = 4
     reserve = len(CTA_EMOJI) * 2 + 8      # эмодзи телега считает за 2 символа
-    room = TG_CAPTION_LIMIT - len(title) - len(CTA_TEXT) - separators - reserve
+    room = TG_CAPTION_LIMIT - len(title) - len(cta_text) - separators - reserve
 
     body = (desc or "").strip()
     if len(body) > room:
@@ -298,7 +304,7 @@ def build_caption(title: str, desc: str, url: str) -> str:
     parts = [f'<b><a href="{link}">{html.escape(title)}</a></b>']
     if body:
         parts.append(html.escape(body))
-    cta = f"{CTA_EMOJI} {CTA_TEXT}".strip()
+    cta = f"{CTA_EMOJI} {cta_text}".strip()
     parts.append(f'<b><a href="{link}">{html.escape(cta)}</a></b>')
     return "\n\n".join(parts)
 
@@ -331,7 +337,7 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
 
 
 def process_channel(handle: str, tg_channel: str, mode: str,
-                    skip_shorts: bool, state: dict) -> None:
+                    skip_shorts: bool, cta_text: str, state: dict) -> None:
     try:
         feed_url = find_feed_url(handle)
         videos = fetch_feed(feed_url)
@@ -370,7 +376,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
 
         print(f"[{handle}] новое видео {v['id']} -> {tg_channel}")
         caption = build_caption(
-            v["title"], extract_description(v["description"], mode), v["url"]
+            v["title"], extract_description(v["description"], mode), v["url"], cta_text
         )
         thumb = best_thumb(v["id"], v["thumb"])
         if send_post(tg_channel, thumb, caption):
@@ -383,8 +389,8 @@ def main() -> None:
         print("YT_CHANNELS не задан — нечего делать")
         return
     state = load_state()
-    for handle, tg_channel, mode, skip_shorts in CHANNELS:
-        process_channel(handle, tg_channel, mode, skip_shorts, state)
+    for handle, tg_channel, mode, skip_shorts, cta in CHANNELS:
+        process_channel(handle, tg_channel, mode, skip_shorts, cta, state)
     save_state(state)
     print("готово")
 
