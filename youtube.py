@@ -16,6 +16,8 @@ import os
 import pathlib
 import re
 import sys
+import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
@@ -42,6 +44,11 @@ MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
 SKIP_SHORTS = os.environ.get("SKIP_SHORTS", "1") == "1"
 # Страховка: ролики старше этого числа дней не постим никогда.
 MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
+# Shorts пытаться заливать файлом, а не карточкой
+SHORTS_AS_VIDEO = os.environ.get("SHORTS_AS_VIDEO", "1") == "1"
+# Необязательно: содержимое cookies.txt, если YouTube требует авторизацию
+YT_COOKIES = os.environ.get("YT_COOKIES", "").strip()
+TG_UPLOAD_LIMIT = 50 * 1024 * 1024
 
 STATE_FILE = pathlib.Path("state_youtube.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -289,6 +296,86 @@ def paragraphize(text: str) -> str:
     return "\n\n".join(g for g in groups if g)
 
 
+def cookies_file() -> str:
+    """Пишет cookies во временный файл, если они заданы."""
+    if not YT_COOKIES:
+        return ""
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(YT_COOKIES)
+    return path
+
+
+def download_video(url: str):
+    """Качает ролик через yt-dlp. Возвращает (путь, метаданные) или (None, None)."""
+    try:
+        import yt_dlp
+    except ImportError:
+        print("  ~ yt-dlp не установлен — шлём карточкой")
+        return None, None
+
+    tmp = tempfile.mkdtemp()
+    base = {
+        "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
+        "format": "mp4[filesize<50M]/best[filesize<50M]/mp4/best",
+        "quiet": True,
+        "noplaylist": True,
+        "retries": 2,
+    }
+    ck = cookies_file()
+    if ck:
+        base["cookiefile"] = ck
+
+    # Пробуем разные клиенты YouTube: у некоторых проверка «не бот» не срабатывает.
+    # Последняя попытка — через зеркала Invidious (если плагин установлен).
+    attempts = [
+        ("tv", {"extractor_args": {"youtube": {"player_client": ["tv"]}}}),
+        ("ios", {"extractor_args": {"youtube": {"player_client": ["ios"]}}}),
+        ("android", {"extractor_args": {"youtube": {"player_client": ["android"]}}}),
+        ("web", {}),
+    ]
+
+    try:
+        for name, extra in attempts:
+            opts = dict(base)
+            opts.update(extra)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    path = ydl.prepare_filename(info)
+                print(f"  скачано через клиент: {name}")
+                return path, {
+                    "width": info.get("width"),
+                    "height": info.get("height"),
+                    "duration": info.get("duration"),
+                }
+            except Exception as e:
+                print(f"  ~ клиент {name} не сработал: {str(e)[:100]}")
+        print("  ~ ни один клиент не сработал — шлём карточкой")
+        return None, None
+    finally:
+        if ck:
+            try:
+                os.remove(ck)
+            except OSError:
+                pass
+
+
+def send_video(tg_channel: str, path: str, caption: str, meta: dict) -> bool:
+    data = {"chat_id": tg_channel, "caption": caption, "parse_mode": "HTML",
+            "supports_streaming": True}
+    for key in ("width", "height", "duration"):
+        if meta and meta.get(key):
+            data[key] = int(meta[key])
+    with open(path, "rb") as f:
+        r = requests.post(f"{TG_API}/sendVideo", data=data,
+                          files={"video": f}, timeout=300)
+    ok = r.ok and r.json().get("ok")
+    if not ok:
+        print(f"  ! Telegram отклонил видео: {r.text[:250]}", file=sys.stderr)
+    return bool(ok)
+
+
 def build_caption(title: str, desc: str, url: str, cta_text: str = None) -> str:
     cta_text = cta_text or CTA_TEXT
     separators = 4
@@ -368,18 +455,36 @@ def process_channel(handle: str, tg_channel: str, mode: str,
             save_state(state)
             continue
 
-        if skip_shorts and is_short(v["id"]):
+        short = is_short(v["id"])
+        if skip_shorts and short:
             print(f"[{handle}] {v['id']} — Shorts, пропускаем")
             state.setdefault(handle, []).append(v["id"])
             save_state(state)
             continue
 
-        print(f"[{handle}] новое видео {v['id']} -> {tg_channel}")
+        kind = "Shorts" if short else "видео"
+        print(f"[{handle}] новое {kind} {v['id']} -> {tg_channel}")
         caption = build_caption(
             v["title"], extract_description(v["description"], mode), v["url"], cta_text
         )
-        thumb = best_thumb(v["id"], v["thumb"])
-        if send_post(tg_channel, thumb, caption):
+
+        sent = False
+        if short and SHORTS_AS_VIDEO:
+            path, meta = download_video(v["url"])
+            if path:
+                if os.path.getsize(path) <= TG_UPLOAD_LIMIT:
+                    sent = send_video(tg_channel, path, caption, meta)
+                else:
+                    print("  ~ файл больше 50 МБ — шлём карточкой")
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+        if not sent:
+            sent = send_post(tg_channel, best_thumb(v["id"], v["thumb"]), caption)
+
+        if sent:
             state.setdefault(handle, []).append(v["id"])
             save_state(state)
 
