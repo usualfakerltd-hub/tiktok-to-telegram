@@ -317,7 +317,9 @@ def download_video(url: str):
     tmp = tempfile.mkdtemp()
     base = {
         "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-        "format": "mp4[filesize<50M]/best[filesize<50M]/mp4/best",
+        # bv*+ba — видео вместе со звуком
+        "format": "bv*+ba/b",
+        "merge_output_format": "mp4",
         "quiet": True,
         "noplaylist": True,
         "retries": 2,
@@ -456,6 +458,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
             continue
 
         short = is_short(v["id"])
+        print(f"  проверка на Shorts: {'да' if short else 'нет'}")
         if skip_shorts and short:
             print(f"[{handle}] {v['id']} — Shorts, пропускаем")
             state.setdefault(handle, []).append(v["id"])
@@ -469,6 +472,8 @@ def process_channel(handle: str, tg_channel: str, mode: str,
         )
 
         sent = False
+        if short and not SHORTS_AS_VIDEO:
+            print("  SHORTS_AS_VIDEO выключен — шлём карточкой")
         if short and SHORTS_AS_VIDEO:
             path, meta = download_video(v["url"])
             if path:
