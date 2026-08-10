@@ -230,7 +230,9 @@ def download(url: str, keep_tags: bool):
     tmp = tempfile.mkdtemp()
     opts = {
         "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-        "format": "mp4/best",
+        # bv*+ba — видео вместе со звуком; просто "mp4" может дать дорожку без аудио
+        "format": "bv*+ba/b",
+        "merge_output_format": "mp4",
         "quiet": True,
         "noplaylist": True,
     }
