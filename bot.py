@@ -20,6 +20,7 @@ import pathlib
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -212,7 +213,7 @@ def save_state(state: dict) -> None:
     )
 
 
-def list_videos(user: str) -> list:
+def _list_videos_once(user: str) -> list:
     url = f"https://www.tiktok.com/@{user}"
     opts = {"extract_flat": True, "quiet": True, "skip_download": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -224,6 +225,20 @@ def list_videos(user: str) -> list:
         link = e.get("url") or f"https://www.tiktok.com/@{user}/video/{vid}"
         videos.append({"id": vid, "url": link})
     return videos
+
+
+def list_videos(user: str, attempts: int = 2) -> list:
+    """TikTok иногда отдаёт пустой ответ на разовый запрос — пробуем ещё раз."""
+    last_err = None
+    for i in range(attempts):
+        try:
+            return _list_videos_once(user)
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                print(f"  ~ попытка {i + 1} неудачна, пробую снова через 5с")
+                time.sleep(5)
+    raise last_err
 
 
 def download(url: str, keep_tags: bool):
