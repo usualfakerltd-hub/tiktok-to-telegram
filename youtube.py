@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -190,15 +191,40 @@ def find_feed_url(handle: str) -> str:
     r.raise_for_status()
     page = r.text
 
+    blocked_markers = ("consent.youtube.com", "id=\"SB\"", "unusual traffic",
+                        "confirm you're not a robot", "Enable JavaScript")
+    if any(mk in page for mk in blocked_markers) or len(page) < 5000:
+        print(f"  ~ страница канала подозрительно короткая/похожа на блок-страницу "
+              f"(длина {len(page)} символов)")
+
     m = RSS_LINK_RE.search(page)
     if m:
         return m.group(1)
 
     m = EXTERNAL_ID_RE.search(page)
     if m:
+        print(f"  ~ RSS-ссылка не найдена, беру channelId из externalId: {m.group(1)}")
         return f"https://www.youtube.com/feeds/videos.xml?channel_id={m.group(1)}"
 
-    raise RuntimeError("не нашёл адрес RSS на странице канала")
+    raise RuntimeError(
+        f"не нашёл адрес RSS на странице канала (status={r.status_code}, "
+        f"длина страницы={len(page)})"
+    )
+
+
+def fetch_feed_with_retry(handle: str, attempts: int = 2) -> list:
+    """Получает фид с одной повторной попыткой при неудаче — блокировки бывают разовыми."""
+    last_err = None
+    for i in range(attempts):
+        try:
+            feed_url = find_feed_url(handle)
+            return fetch_feed(feed_url)
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                print(f"  ~ попытка {i + 1} неудачна ({str(e)[:100]}), пробую снова")
+                time.sleep(5)
+    raise last_err
 
 
 def fetch_feed(feed_url: str) -> list:
@@ -540,8 +566,7 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
 def process_channel(handle: str, tg_channel: str, mode: str,
                     skip_shorts: bool, cta_text: str, state: dict) -> None:
     try:
-        feed_url = find_feed_url(handle)
-        videos = fetch_feed(feed_url)
+        videos = fetch_feed_with_retry(handle)
     except Exception as e:
         print(f"[{handle}] не удалось получить фид: {e}", file=sys.stderr)
         return
