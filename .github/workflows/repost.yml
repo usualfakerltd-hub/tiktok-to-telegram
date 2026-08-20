@@ -22,10 +22,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
       - name: Install deps
         run: pip install -r requirements.txt
 
@@ -41,8 +37,10 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           YT_CHANNELS: ${{ secrets.YT_CHANNELS }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           MAX_AGE_DAYS: '7'
           SHORTS_AS_VIDEO: '1'
+          MAX_HEIGHT: '1080'
         run: python youtube.py
 
       - name: Commit state
