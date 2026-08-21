@@ -372,6 +372,7 @@ def _pick_stream(streams: list, want_audio: bool):
 def download_via_api(video_id: str):
     """Качает ролик через RapidAPI (у сервиса свои IP, YouTube их не режет)."""
     if not RAPIDAPI_KEY:
+        print("  ~ RAPIDAPI_KEY не задан — пропускаю RapidAPI, пробую yt-dlp")
         return None, None
 
     try:
@@ -501,6 +502,21 @@ def download_video(url: str):
                 pass
 
 
+def build_video_caption(title: str, desc: str) -> str:
+    """Подпись для настоящего видеофайла: просто заголовок и описание, без ссылки и CTA."""
+    separators = 2
+    room = TG_CAPTION_LIMIT - len(title) - separators
+
+    body = paragraphize((desc or "").strip())
+    if len(body) > room:
+        body = body[: max(room - 1, 0)].rstrip() + "…"
+
+    parts = [f"<b>{html.escape(title)}</b>"]
+    if body:
+        parts.append(html.escape(body))
+    return "\n\n".join(parts)
+
+
 def send_video(tg_channel: str, path: str, caption: str, meta: dict) -> bool:
     data = {"chat_id": tg_channel, "caption": caption, "parse_mode": "HTML",
             "supports_streaming": True}
@@ -604,9 +620,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
 
         kind = "Shorts" if short else "видео"
         print(f"[{handle}] новое {kind} {v['id']} -> {tg_channel}")
-        caption = build_caption(
-            v["title"], extract_description(v["description"], mode), v["url"], cta_text
-        )
+        desc = extract_description(v["description"], mode)
 
         sent = False
         if short and not SHORTS_AS_VIDEO:
@@ -617,7 +631,9 @@ def process_channel(handle: str, tg_channel: str, mode: str,
                 path, meta = download_video(v["url"])
             if path:
                 if os.path.getsize(path) <= TG_UPLOAD_LIMIT:
-                    sent = send_video(tg_channel, path, caption, meta)
+                    # Настоящий видеофайл: простая подпись, без ссылки и без CTA-кнопки
+                    video_caption = build_video_caption(v["title"], desc)
+                    sent = send_video(tg_channel, path, video_caption, meta)
                 else:
                     print("  ~ файл больше 50 МБ — шлём карточкой")
                 try:
@@ -626,8 +642,10 @@ def process_channel(handle: str, tg_channel: str, mode: str,
                     pass
 
         if not sent:
+            # Карточка: заголовок-ссылка + кнопка "Смотреть" — нужны для перехода к видео
+            card_caption = build_caption(v["title"], desc, v["url"], cta_text)
             sent = send_post(
-                tg_channel, best_thumb(v["id"], v["thumb"], vertical=short), caption
+                tg_channel, best_thumb(v["id"], v["thumb"], vertical=short), card_caption
             )
 
         if sent:
