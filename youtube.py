@@ -502,6 +502,19 @@ def download_video(url: str):
                 pass
 
 
+def _norm(text: str) -> str:
+    """Для сравнения на дубль: без регистра, пунктуации и лишних пробелов."""
+    text = re.sub(r"[^\w\s]", "", (text or "").casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def dedupe_title(title: str, desc: str) -> str:
+    """Если описание — это, по сути, повтор заголовка, убираем его."""
+    if _norm(desc) == _norm(title):
+        return ""
+    return desc
+
+
 def build_video_caption(title: str, desc: str) -> str:
     """Подпись для настоящего видеофайла: просто заголовок и описание, без ссылки и CTA."""
     separators = 2
@@ -620,7 +633,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
 
         kind = "Shorts" if short else "видео"
         print(f"[{handle}] новое {kind} {v['id']} -> {tg_channel}")
-        desc = extract_description(v["description"], mode)
+        desc = dedupe_title(v["title"], extract_description(v["description"], mode))
 
         sent = False
         if short and not SHORTS_AS_VIDEO:
