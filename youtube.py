@@ -646,6 +646,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
                 if os.path.getsize(path) <= TG_UPLOAD_LIMIT:
                     # Настоящий видеофайл: простая подпись, без ссылки и без CTA-кнопки
                     video_caption = build_video_caption(v["title"], desc)
+                    print(f"  --- подпись видео (repr) ---\n  {video_caption!r}")
                     sent = send_video(tg_channel, path, video_caption, meta)
                 else:
                     print("  ~ файл больше 50 МБ — шлём карточкой")
