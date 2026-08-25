@@ -524,7 +524,7 @@ def build_video_caption(title: str, desc: str) -> str:
     if len(body) > room:
         body = body[: max(room - 1, 0)].rstrip() + "…"
 
-    parts = [f"<b>{html.escape(title)}</b>"]
+    parts = [html.escape(title)]
     if body:
         parts.append(html.escape(body))
     return "\n\n".join(parts)
