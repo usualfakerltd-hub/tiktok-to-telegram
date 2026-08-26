@@ -30,6 +30,8 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           IG_ACCOUNTS: ${{ secrets.IG_ACCOUNTS }}
+          APIFY_TOKEN_2: ${{ secrets.APIFY_TOKEN_2 }}
+          IG_ACCOUNTS_2: ${{ secrets.IG_ACCOUNTS_2 }}
           MAX_AGE_DAYS: '7'
           IG_FETCH_LIMIT: '5'
         run: python instagram.py
