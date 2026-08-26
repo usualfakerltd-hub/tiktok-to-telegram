@@ -22,7 +22,6 @@ from urllib.parse import quote
 import requests
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-APIFY_TOKEN = os.environ["APIFY_TOKEN"]
 
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
 MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
@@ -31,10 +30,7 @@ KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
 
 STATE_FILE = pathlib.Path("state_instagram.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-APIFY_URL = (
-    "https://api.apify.com/v2/acts/apify~instagram-scraper"
-    f"/run-sync-get-dataset-items?token={APIFY_TOKEN}"
-)
+APIFY_URL = "https://api.apify.com/v2/acts/apify~instagram-scraper/run-sync-get-dataset-items"
 
 TG_CAPTION_LIMIT = 1024
 TG_TEXT_LIMIT = 4096
@@ -45,19 +41,42 @@ MENTION_RE = re.compile(r"(?<![\w@.])@([A-Za-z0-9_](?:[A-Za-z0-9_.]*[A-Za-z0-9_]
 
 
 def parse_accounts(raw: str) -> list:
+    """'ник:@канал' или 'ник:@канал:лимит' — сколько постов брать за заход."""
     result = []
     for item in raw.split(","):
         item = item.strip()
         if not item or ":" not in item:
             continue
-        user, chan = item.split(":", 1)
-        user, chan = user.strip().lstrip("@"), chan.strip()
+        parts = item.split(":")
+        user = parts[0].strip().lstrip("@")
+        chan = parts[1].strip() if len(parts) > 1 else ""
+        limit = FETCH_LIMIT
+        if len(parts) > 2 and parts[2].strip().isdigit():
+            limit = int(parts[2].strip())
         if user and chan:
-            result.append((user, chan))
+            result.append((user, chan, limit))
     return result
 
 
-ACCOUNTS = parse_accounts(os.environ.get("IG_ACCOUNTS", ""))
+def load_groups() -> list:
+    """Пары (список аккаунтов, токен). Второй набор — необязательный."""
+    groups = []
+    for acc_var, tok_var in (
+        ("IG_ACCOUNTS", "APIFY_TOKEN"),
+        ("IG_ACCOUNTS_2", "APIFY_TOKEN_2"),
+    ):
+        raw = os.environ.get(acc_var, "").strip()
+        token = os.environ.get(tok_var, "").strip()
+        if not raw or not token:
+            continue
+        accounts = parse_accounts(raw)
+        if accounts:
+            groups.append((accounts, token))
+    return groups
+
+
+GROUPS = load_groups()
+ACCOUNTS = [a for accs, _ in GROUPS for a in accs]
 
 
 def clean_caption(text: str) -> str:
@@ -96,7 +115,7 @@ def remember(state: dict, user: str, post_id: str) -> None:
 
 
 def save_state(state: dict) -> None:
-    order = [u for u, _ in ACCOUNTS]
+    order = [u for u, _, _ in ACCOUNTS]
     ordered = {}
     for user in reversed(order):
         if user in state:
@@ -109,15 +128,15 @@ def save_state(state: dict) -> None:
     )
 
 
-def fetch_posts(user: str) -> list:
+def fetch_posts(user: str, token: str, limit: int) -> list:
     """Запрашивает последние посты профиля через Apify."""
     payload = {
         "directUrls": [f"https://www.instagram.com/{user}/"],
         "resultsType": "posts",
-        "resultsLimit": FETCH_LIMIT,
+        "resultsLimit": limit,
         "addParentData": False,
     }
-    r = requests.post(APIFY_URL, json=payload, timeout=300)
+    r = requests.post(APIFY_URL, params={"token": token}, json=payload, timeout=300)
     r.raise_for_status()
     items = r.json()
 
@@ -328,9 +347,9 @@ def send_post(channel: str, post: dict) -> bool:
                 pass
 
 
-def process(user: str, channel: str, state: dict) -> None:
+def process(user: str, channel: str, token: str, limit: int, state: dict) -> None:
     try:
-        posts = fetch_posts(user)
+        posts = fetch_posts(user, token, limit)
     except Exception as e:
         print(f"[{user}] Apify не ответил: {e}", file=sys.stderr)
         return
@@ -364,12 +383,14 @@ def process(user: str, channel: str, state: dict) -> None:
 
 
 def main() -> None:
-    if not ACCOUNTS:
-        print("IG_ACCOUNTS не задан — нечего делать")
+    if not GROUPS:
+        print("IG_ACCOUNTS / APIFY_TOKEN не заданы — нечего делать")
         return
     state = load_state()
-    for user, channel in ACCOUNTS:
-        process(user, channel, state)
+    for i, (accounts, token) in enumerate(GROUPS, 1):
+        print(f"=== набор {i}: аккаунтов {len(accounts)} ===")
+        for user, channel, limit in accounts:
+            process(user, channel, token, limit, state)
     save_state(state)
     print("готово")
 
