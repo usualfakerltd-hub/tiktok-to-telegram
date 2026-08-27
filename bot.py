@@ -321,22 +321,23 @@ def send_video(path: str, caption: str, channel: str, keep_tags: bool,
     return True
 
 
-def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
+def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> bool:
+    """Возвращает False, если не удалось даже получить список видео (для алертов)."""
     posted = set(state.get(user, []))
     try:
         videos = list_videos(user)
     except Exception as e:
         print(f"[{user}] не удалось получить список: {e}", file=sys.stderr)
-        return
+        return False
 
     if not videos:
         print(f"[{user}] список пуст (возможно, TikTok ограничил IP)")
-        return
+        return False
 
     if user not in state:
         state[user] = [v["id"] for v in videos][:KEEP_HISTORY]
         print(f"[{user}] первый запуск — засеяли {len(videos)} видео, посты не шлём")
-        return
+        return True
 
     unseen = list(reversed([v for v in videos if v["id"] not in posted]))
 
@@ -349,7 +350,7 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
     new = [v for v in unseen if not is_too_old(v["id"])][:MAX_PER_RUN]
     if not new:
         print(f"[{user}] новых видео нет")
-        return
+        return True
 
     for v in new:
         print(f"[{user}] новое видео {v['id']} -> {channel}")
@@ -371,14 +372,23 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> None:
             remember(state, user, v["id"])
             save_state(state)
         os.remove(path)
+    return True
 
 
 def main() -> None:
     state = load_state()
+    ok, total = 0, 0
     for user, channel, keep_tags in USERS:
-        process_user(user, channel, keep_tags, state)
+        total += 1
+        if process_user(user, channel, keep_tags, state):
+            ok += 1
     save_state(state)
     print("готово")
+    if total and ok == 0:
+        # Все источники разом отдали ошибку — это не «постов нет», а системный сбой
+        # (блокировка IP, битый секрет и т.п.). Роняем прогон, чтобы сработал алерт.
+        print(f"ВСЕ {total} источников недоступны — считаем это сбоем", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
