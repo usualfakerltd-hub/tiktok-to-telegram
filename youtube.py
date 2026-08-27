@@ -593,28 +593,29 @@ def send_post(tg_channel: str, thumb: str, caption: str) -> bool:
 
 
 def process_channel(handle: str, tg_channel: str, mode: str,
-                    skip_shorts: bool, cta_text: str, state: dict) -> None:
+                    skip_shorts: bool, cta_text: str, state: dict) -> bool:
+    """Возвращает False, если не удалось даже получить фид (для алертов)."""
     try:
         videos = fetch_feed_with_retry(handle)
     except Exception as e:
         print(f"[{handle}] не удалось получить фид: {e}", file=sys.stderr)
-        return
+        return False
 
     if not videos:
         print(f"[{handle}] фид пуст")
-        return
+        return False
 
     if handle not in state:
         state[handle] = [v["id"] for v in videos]
         print(f"[{handle}] первый запуск — засеяли {len(videos)}, посты не шлём")
-        return
+        return True
 
     posted = set(state.get(handle, []))
     new = [v for v in videos if v["id"] not in posted]
     new = list(reversed(new))[:MAX_PER_RUN]
     if not new:
         print(f"[{handle}] новых видео нет")
-        return
+        return True
 
     for v in new:
         if is_too_old(v["published"]):
@@ -665,6 +666,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
         if sent:
             state.setdefault(handle, []).append(v["id"])
             save_state(state)
+    return True
 
 
 def main() -> None:
@@ -672,10 +674,16 @@ def main() -> None:
         print("YT_CHANNELS не задан — нечего делать")
         return
     state = load_state()
+    ok, total = 0, 0
     for handle, tg_channel, mode, skip_shorts, cta in CHANNELS:
-        process_channel(handle, tg_channel, mode, skip_shorts, cta, state)
+        total += 1
+        if process_channel(handle, tg_channel, mode, skip_shorts, cta, state):
+            ok += 1
     save_state(state)
     print("готово")
+    if total and ok == 0:
+        print(f"ВСЕ {total} каналов недоступны — считаем это сбоем", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
