@@ -352,21 +352,22 @@ def send_post(channel: str, post: dict) -> bool:
                 pass
 
 
-def process(user: str, channel: str, token: str, limit: int, state: dict) -> None:
+def process(user: str, channel: str, token: str, limit: int, state: dict) -> bool:
+    """Возвращает False, если не удалось даже получить посты (для алертов)."""
     try:
         posts = fetch_posts(user, token, limit)
     except Exception as e:
         print(f"[{user}] Apify не ответил: {e}", file=sys.stderr)
-        return
+        return False
 
     if not posts:
         print(f"[{user}] постов не вернулось")
-        return
+        return False
 
     if user not in state:
         state[user] = [p["id"] for p in posts][:KEEP_HISTORY]
         print(f"[{user}] первый запуск — засеяли {len(posts)}, посты не шлём")
-        return
+        return True
 
     posted = set(state.get(user, []))
     unseen = list(reversed([p for p in posts if p["id"] not in posted]))
@@ -378,13 +379,14 @@ def process(user: str, channel: str, token: str, limit: int, state: dict) -> Non
     new = [p for p in unseen if not is_too_old(p["timestamp"])][:MAX_PER_RUN]
     if not new:
         print(f"[{user}] новых постов нет")
-        return
+        return True
 
     for p in new:
         print(f"[{user}] новый пост {p['id']} ({p['type']}) -> {channel}")
         if send_post(channel, p):
             remember(state, user, p["id"])
             save_state(state)
+    return True
 
 
 def main() -> None:
@@ -392,12 +394,18 @@ def main() -> None:
         print("IG_ACCOUNTS / APIFY_TOKEN не заданы — нечего делать")
         return
     state = load_state()
+    ok, total = 0, 0
     for i, (accounts, token) in enumerate(GROUPS, 1):
         print(f"=== набор {i}: аккаунтов {len(accounts)} ===")
         for user, channel, limit in accounts:
-            process(user, channel, token, limit, state)
+            total += 1
+            if process(user, channel, token, limit, state):
+                ok += 1
     save_state(state)
     print("готово")
+    if total and ok == 0:
+        print(f"ВСЕ {total} аккаунтов недоступны — считаем это сбоем", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
