@@ -82,6 +82,9 @@ ACCOUNTS = [a for accs, _ in GROUPS for a in accs]
 def clean_caption(text: str) -> str:
     """Instagram отдаёт переносы строк как есть — их сохраняем."""
     text = (text or "").replace("\xa0", " ")
+    # Instagram иногда отдаёт апострофы и кавычки как HTML-сущности
+    # (например, "&#x27;") — раскодируем их в обычные символы.
+    text = html.unescape(text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = "\n".join(ln.strip() for ln in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -137,6 +140,8 @@ def fetch_posts(user: str, token: str, limit: int) -> list:
         "addParentData": False,
     }
     r = requests.post(APIFY_URL, params={"token": token}, json=payload, timeout=300)
+    if not r.ok:
+        print(f"  ~ Apify ответил {r.status_code}: {r.text[:500]}")
     r.raise_for_status()
     items = r.json()
 
@@ -256,7 +261,7 @@ def send_text(channel: str, text: str) -> bool:
             f"{TG_API}/sendMessage",
             data={
                 "chat_id": channel,
-                "text": linkify(html.escape(part)),
+                "text": linkify(html.escape(part, quote=False)),
                 "parse_mode": "HTML",
             },
             timeout=60,
@@ -301,7 +306,7 @@ def send_post(channel: str, post: dict) -> bool:
             field = "video" if kind == "video" else "photo"
             data = {"chat_id": channel}
             if not split and caption:
-                data["caption"] = linkify(html.escape(caption))
+                data["caption"] = linkify(html.escape(caption, quote=False))
                 data["parse_mode"] = "HTML"
             with open(path, "rb") as f:
                 r = requests.post(
@@ -314,7 +319,7 @@ def send_post(channel: str, post: dict) -> bool:
                 name = f"m{i}"
                 entry = {"type": kind, "media": f"attach://{name}"}
                 if i == 0 and not split and caption:
-                    entry["caption"] = linkify(html.escape(caption))
+                    entry["caption"] = linkify(html.escape(caption, quote=False))
                     entry["parse_mode"] = "HTML"
                 group.append(entry)
                 files[name] = open(path, "rb")
