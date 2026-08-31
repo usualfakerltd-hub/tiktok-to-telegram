@@ -436,13 +436,23 @@ def download_via_api(video_id: str):
     return None, None
 
 
-def _fetch(url: str, path: str) -> str:
-    with requests.get(url, stream=True, timeout=300) as r:
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            for chunk in r.iter_content(1 << 16):
-                f.write(chunk)
-    return path
+def _fetch(url: str, path: str, attempts: int = 2) -> str:
+    """Качает файл потоком. Обрыв соединения на скачивании часто разовый — пробуем ещё раз."""
+    last_err = None
+    for i in range(attempts):
+        try:
+            with requests.get(url, stream=True, timeout=300) as r:
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(1 << 16):
+                        f.write(chunk)
+            return path
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                print(f"  ~ скачивание оборвалось ({str(e)[:100]}), пробую снова")
+                time.sleep(3)
+    raise last_err
 
 
 def download_video(url: str):
