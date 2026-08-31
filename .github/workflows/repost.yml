@@ -56,7 +56,8 @@ jobs:
       - name: Notify on failure
         if: failure()
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+          RESPONSE=$(curl -sS -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
             --data-urlencode "chat_id=${{ secrets.ALERT_CHAT }}" \
-            --data-urlencode "text=⚠️ Бот упал. Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            > /dev/null
+            --data-urlencode "text=⚠️ Бот упал. Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          echo "Telegram ответил: $RESPONSE"
+          echo "$RESPONSE" | grep -q '"ok":true' || echo "!!! отправка не удалась, смотри ответ выше"
