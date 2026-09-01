@@ -18,6 +18,8 @@ import json
 import os
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -36,6 +38,11 @@ MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "5"))
 MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 # Сколько последних id помнить по каждому аккаунту (чтобы файл не разрастался).
 KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
+# Основной путь получения видео — через RapidAPI (tikwm/tiktok-scraper7),
+# он не блокируется по IP раннера так, как прямой yt-dlp. Использует тот же
+# ключ, что и youtube.py. Если ключа нет или API отказал — падаем на yt-dlp.
+TIKTOK_API_KEY = os.environ.get("RAPIDAPI_KEY", "").strip()
+TIKTOK_API_HOST = os.environ.get("TIKTOK_API_HOST", "tiktok-scraper7.p.rapidapi.com")
 # DEBUG_DESC=1 — печатать сырое описание в лог (для диагностики переносов строк)
 DEBUG_DESC = os.environ.get("DEBUG_DESC", "0") == "1"
 # Разбивать длинные описания на абзацы (короткие не трогаются).
@@ -227,8 +234,46 @@ def _list_videos_once(user: str) -> list:
     return videos
 
 
+def list_videos_via_api(user: str, count: int = 10):
+    """Список видео через RapidAPI: даёт готовую ссылку на файл без вотермарки
+    и точную дату публикации, поэтому не зависит от блокировки TikTok по IP."""
+    if not TIKTOK_API_KEY:
+        return None
+    try:
+        r = requests.get(
+            f"https://{TIKTOK_API_HOST}/user/posts",
+            params={"unique_id": user, "count": str(count), "cursor": "0"},
+            headers={"x-rapidapi-key": TIKTOK_API_KEY, "x-rapidapi-host": TIKTOK_API_HOST},
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            print(f"  ~ TikTok API: {data.get('msg')}")
+            return None
+        out = []
+        for v in (data.get("data") or {}).get("videos") or []:
+            vid = str(v.get("video_id") or "")
+            if not vid:
+                continue
+            out.append({
+                "id": vid,
+                "url": f"https://www.tiktok.com/@{user}/video/{vid}",
+                "play_url": v.get("play") or "",
+                "raw_title": v.get("title") or "",
+            })
+        return out
+    except Exception as e:
+        print(f"  ~ TikTok API не ответил: {str(e)[:150]}")
+        return None
+
+
 def list_videos(user: str, attempts: int = 2) -> list:
-    """TikTok иногда отдаёт пустой ответ на разовый запрос — пробуем ещё раз."""
+    api_result = list_videos_via_api(user)
+    if api_result is not None:
+        return api_result
+
+    print("  ~ используем запасной путь (yt-dlp) — TikTok иногда его блокирует")
     last_err = None
     for i in range(attempts):
         try:
@@ -241,7 +286,71 @@ def list_videos(user: str, attempts: int = 2) -> list:
     raise last_err
 
 
-def download(url: str, keep_tags: bool):
+def _tt_fetch(url: str, path: str, attempts: int = 2) -> str:
+    """Качает файл по прямой ссылке. Обрыв соединения — частый разовый сбой."""
+    last_err = None
+    for i in range(attempts):
+        try:
+            with requests.get(url, stream=True, timeout=180) as r:
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(1 << 16):
+                        f.write(chunk)
+            return path
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                print(f"  ~ скачивание оборвалось ({str(e)[:100]}), пробую снова")
+                time.sleep(3)
+    raise last_err
+
+
+def _probe_video(path: str) -> dict:
+    """Реальные width/height/duration из файла — надёжнее любых метаданных API."""
+    if not shutil.which("ffprobe"):
+        return {}
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-show_entries", "format=duration",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        data = json.loads(out.stdout)
+        stream = (data.get("streams") or [{}])[0]
+        fmt = data.get("format") or {}
+        dur = fmt.get("duration")
+        return {
+            "width": stream.get("width"),
+            "height": stream.get("height"),
+            "duration": round(float(dur)) if dur else None,
+        }
+    except Exception:
+        return {}
+
+
+def download(v: dict, keep_tags: bool):
+    """Качает видео. Есть прямая ссылка из API — качаем без yt-dlp вообще."""
+    play_url = v.get("play_url")
+    if play_url:
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, f"{v['id']}.mp4")
+        try:
+            _tt_fetch(play_url, path)
+            meta = _probe_video(path)
+            raw = v.get("raw_title", "")
+            if DEBUG_DESC:
+                print("  --- сырое описание (repr, первые 600 символов) ---")
+                print("  " + repr(raw[:600]))
+                print("  --- конец ---")
+            return path, clean_caption(raw, keep_tags), meta
+        except Exception as e:
+            print(f"  ~ прямая ссылка не сработала ({str(e)[:120]}), пробую yt-dlp")
+
+    return download_via_ytdlp(v["url"], keep_tags)
+
+
+def download_via_ytdlp(url: str, keep_tags: bool):
     tmp = tempfile.mkdtemp()
     opts = {
         "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
@@ -355,7 +464,7 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> bool:
     for v in new:
         print(f"[{user}] новое видео {v['id']} -> {channel}")
         try:
-            path, caption, meta = download(v["url"], keep_tags)
+            path, caption, meta = download(v, keep_tags)
         except Exception as e:
             print(f"  ! не скачалось: {e}", file=sys.stderr)
             continue
