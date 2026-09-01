@@ -51,7 +51,13 @@ CHECK_STATE_FILE = pathlib.Path("state_tiktok_checks.json")
 
 def load_check_state() -> dict:
     if CHECK_STATE_FILE.exists():
-        return json.loads(CHECK_STATE_FILE.read_text(encoding="utf-8"))
+        raw = CHECK_STATE_FILE.read_text(encoding="utf-8").strip()
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                print("  ~ state_tiktok_checks.json повреждён, начинаем заново",
+                      file=sys.stderr)
     return {}
 
 
