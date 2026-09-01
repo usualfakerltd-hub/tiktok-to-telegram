@@ -30,6 +30,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           TIKTOK_USERS: ${{ secrets.TIKTOK_USERS }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python bot.py
 
       - name: Run YouTube bot
@@ -48,7 +49,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state.json state_youtube.json || true
+          git add state.json state_youtube.json state_tiktok_checks.json || true
           git diff --quiet --cached || git commit -m "update state [skip ci]"
           git pull --rebase --autostash
           git push
