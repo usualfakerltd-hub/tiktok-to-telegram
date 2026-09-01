@@ -235,7 +235,7 @@ def remember(state: dict, user: str, video_id: str) -> None:
 
 def save_state(state: dict) -> None:
     """Пишет файл: аккаунты в обратном порядке добавления — новые сверху."""
-    order = [u for u, _, _ in USERS]
+    order = [u for u, _, _, _ in USERS]
     ordered = {}
     for user in reversed(order):
         if user in state:
