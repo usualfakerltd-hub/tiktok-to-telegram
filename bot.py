@@ -43,6 +43,22 @@ KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
 # ключ, что и youtube.py. Если ключа нет или API отказал — падаем на yt-dlp.
 TIKTOK_API_KEY = os.environ.get("RAPIDAPI_KEY", "").strip()
 TIKTOK_API_HOST = os.environ.get("TIKTOK_API_HOST", "tiktok-scraper7.p.rapidapi.com")
+# Бесплатный план RapidAPI даёт лимит запросов в месяц — экономим его,
+# проверяя через API каждый аккаунт не чаще, чем раз в N часов.
+MIN_API_CHECK_HOURS = float(os.environ.get("MIN_API_CHECK_HOURS", "24"))
+CHECK_STATE_FILE = pathlib.Path("state_tiktok_checks.json")
+
+
+def load_check_state() -> dict:
+    if CHECK_STATE_FILE.exists():
+        return json.loads(CHECK_STATE_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_check_state(cs: dict) -> None:
+    CHECK_STATE_FILE.write_text(
+        json.dumps(cs, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 # DEBUG_DESC=1 — печатать сырое описание в лог (для диагностики переносов строк)
 DEBUG_DESC = os.environ.get("DEBUG_DESC", "0") == "1"
 # Разбивать длинные описания на абзацы (короткие не трогаются).
@@ -76,7 +92,7 @@ PLACEHOLDER_RE = re.compile(r"^TikTok video #\d+$", re.IGNORECASE)
 
 
 def parse_users(raw: str) -> list:
-    """Разбирает 'ник:@канал:tags, ник2:@канал2' в список (ник, канал, теги)."""
+    """'ник:@канал:tags:часы' в список (ник, канал, теги, интервал_часов)."""
     result = []
     for item in raw.split(","):
         item = item.strip()
@@ -97,10 +113,17 @@ def parse_users(raw: str) -> list:
         else:
             user, chan = parts[0].strip().lstrip("@"), DEFAULT_CHANNEL
 
+        interval = MIN_API_CHECK_HOURS
+        if len(parts) >= 4 and parts[3].strip():
+            try:
+                interval = float(parts[3].strip())
+            except ValueError:
+                pass
+
         if not chan:
             print(f"[{user}] не задан канал — пропускаем", file=sys.stderr)
             continue
-        result.append((user, chan, keep))
+        result.append((user, chan, keep, interval))
     return result
 
 
@@ -430,14 +453,29 @@ def send_video(path: str, caption: str, channel: str, keep_tags: bool,
     return True
 
 
-def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> bool:
+def process_user(user: str, channel: str, keep_tags: bool, interval_hours: float,
+                  state: dict, check_state: dict) -> bool:
     """Возвращает False, если не удалось даже получить список видео (для алертов)."""
+    if TIKTOK_API_KEY:
+        last = check_state.get(user)
+        if last is not None:
+            elapsed_h = (time.time() - last) / 3600
+            if elapsed_h < interval_hours:
+                print(f"[{user}] проверка отложена — экономим лимит API "
+                      f"(ещё {interval_hours - elapsed_h:.1f} ч)")
+                return True
+
     posted = set(state.get(user, []))
     try:
         videos = list_videos(user)
     except Exception as e:
+        if TIKTOK_API_KEY:
+            check_state[user] = time.time()
         print(f"[{user}] не удалось получить список: {e}", file=sys.stderr)
         return False
+
+    if TIKTOK_API_KEY:
+        check_state[user] = time.time()
 
     if not videos:
         print(f"[{user}] список пуст (возможно, TikTok ограничил IP)")
@@ -486,12 +524,14 @@ def process_user(user: str, channel: str, keep_tags: bool, state: dict) -> bool:
 
 def main() -> None:
     state = load_state()
+    check_state = load_check_state()
     ok, total = 0, 0
-    for user, channel, keep_tags in USERS:
+    for user, channel, keep_tags, interval_hours in USERS:
         total += 1
-        if process_user(user, channel, keep_tags, state):
+        if process_user(user, channel, keep_tags, interval_hours, state, check_state):
             ok += 1
     save_state(state)
+    save_check_state(check_state)
     print("готово")
     if total and ok == 0:
         # Все источники разом отдали ошибку — это не «постов нет», а системный сбой
