@@ -212,8 +212,10 @@ def find_feed_url(handle: str) -> str:
     )
 
 
-def fetch_feed_with_retry(handle: str, attempts: int = 2) -> list:
-    """Получает фид с одной повторной попыткой при неудаче — блокировки бывают разовыми."""
+def fetch_feed_with_retry(handle: str, attempts: int = 4) -> list:
+    """RSS-фиды YouTube в 2026 году нестабильны сами по себе (известная проблема,
+    не наш баг) — 404/500 на рабочих каналах бывают регулярно и обычно проходят
+    сами. Пробуем несколько раз с растущей паузой, прежде чем сдаться."""
     last_err = None
     for i in range(attempts):
         try:
@@ -222,8 +224,9 @@ def fetch_feed_with_retry(handle: str, attempts: int = 2) -> list:
         except Exception as e:
             last_err = e
             if i < attempts - 1:
-                print(f"  ~ попытка {i + 1} неудачна ({str(e)[:100]}), пробую снова")
-                time.sleep(5)
+                delay = 10 * (i + 1)
+                print(f"  ~ попытка {i + 1} неудачна ({str(e)[:100]}), пробую через {delay}с")
+                time.sleep(delay)
     raise last_err
 
 
