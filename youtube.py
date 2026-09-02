@@ -570,7 +570,7 @@ def build_caption(title: str, desc: str, url: str, cta_text: str = None) -> str:
     body = paragraphize(body)
 
     link = html.escape(url, quote=True)
-    parts = [f'<b><a href="{link}">{html.escape(title)}</a></b>']
+    parts = [f"<b>{html.escape(title)}</b>"]
     if body:
         parts.append(html.escape(body))
     cta = f"{CTA_EMOJI} {cta_text}".strip()
