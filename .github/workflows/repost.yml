@@ -45,17 +45,38 @@ jobs:
         run: python youtube.py
 
       - name: Commit state
+        id: commit
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state.json state_youtube.json state_tiktok_checks.json || true
+
+          # Алерт шлём только при ПЕРВОМ сбое подряд — чтобы долгий внешний
+          # простой (например, у YouTube) не заваливал уведомлениями каждые
+          # 15-30 минут. Как только прогон снова пройдёт успешно, счётчик
+          # сбрасывается, и следующий же сбой (тот же самый или новый) снова
+          # пришлёт алерт.
+          PREV="ok"
+          if [ -f alert_state.txt ]; then PREV=$(cat alert_state.txt); fi
+          if [ "${{ job.status }}" == "failure" ]; then
+            echo "fail" > alert_state.txt
+            if [ "$PREV" == "fail" ]; then
+              echo "should_alert=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_alert=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "ok" > alert_state.txt
+            echo "should_alert=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          git add state.json state_youtube.json state_tiktok_checks.json alert_state.txt || true
           git diff --quiet --cached || git commit -m "update state [skip ci]"
           git pull --rebase --autostash
           git push
 
       - name: Notify on failure
-        if: failure()
+        if: steps.commit.outputs.should_alert == 'true'
         run: |
           RESPONSE=$(curl -sS -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
             --data-urlencode "chat_id=${{ secrets.ALERT_CHAT }}" \
