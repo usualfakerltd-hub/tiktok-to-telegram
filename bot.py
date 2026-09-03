@@ -337,14 +337,18 @@ def _tt_fetch(url: str, path: str, attempts: int = 2) -> str:
 def _probe_video(path: str) -> dict:
     """Реальные width/height/duration из файла — надёжнее любых метаданных API."""
     if not shutil.which("ffprobe"):
+        print("  ~ ffprobe не найден на раннере — размеры видео не определить")
         return {}
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-show_entries", "format=duration",
+             "-show_entries", "stream=width,height:format=duration",
              "-of", "json", path],
-            capture_output=True, text=True, timeout=30, check=True,
+            capture_output=True, text=True, timeout=30,
         )
+        if out.returncode != 0:
+            print(f"  ~ ffprobe вернул ошибку: {out.stderr[:200]}")
+            return {}
         data = json.loads(out.stdout)
         stream = (data.get("streams") or [{}])[0]
         fmt = data.get("format") or {}
@@ -354,7 +358,8 @@ def _probe_video(path: str) -> dict:
             "height": stream.get("height"),
             "duration": round(float(dur)) if dur else None,
         }
-    except Exception:
+    except Exception as e:
+        print(f"  ~ ffprobe упал: {str(e)[:200]}")
         return {}
 
 
