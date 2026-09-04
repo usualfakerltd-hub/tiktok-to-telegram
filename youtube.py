@@ -521,6 +521,14 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def clean_title(title: str) -> str:
+    """У Shorts авторы часто вшивают хэштеги прямо в заголовок, а не только
+    в описание — вырезаем их и там."""
+    t = HASHTAG_RE.sub("", title or "")
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip()
+
+
 def dedupe_title(title: str, desc: str) -> str:
     """Если описание — это, по сути, повтор заголовка, убираем его."""
     if _norm(desc) == _norm(title):
@@ -659,7 +667,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
             if path:
                 if os.path.getsize(path) <= TG_UPLOAD_LIMIT:
                     # Настоящий видеофайл: простая подпись, без ссылки и без CTA-кнопки
-                    video_caption = build_video_caption(v["title"], desc)
+                    video_caption = build_video_caption(clean_title(v["title"]), desc)
                     print(f"  --- подпись видео (repr) ---\n  {video_caption!r}")
                     sent = send_video(tg_channel, path, video_caption, meta)
                 else:
@@ -671,7 +679,7 @@ def process_channel(handle: str, tg_channel: str, mode: str,
 
         if not sent:
             # Карточка: заголовок-ссылка + кнопка "Смотреть" — нужны для перехода к видео
-            card_caption = build_caption(v["title"], desc, v["url"], cta_text)
+            card_caption = build_caption(clean_title(v["title"]), desc, v["url"], cta_text)
             sent = send_post(
                 tg_channel, best_thumb(v["id"], v["thumb"], vertical=short), card_caption
             )
