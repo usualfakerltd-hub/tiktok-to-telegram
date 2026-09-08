@@ -289,19 +289,32 @@ def best_thumb(video_id: str, fallback: str, vertical: bool = False) -> str:
     return fallback
 
 
-def is_short(video_id: str) -> bool:
-    """Shorts отдают 200 по адресу /shorts/<id>, обычные видео — редирект."""
-    try:
-        r = requests.head(
-            f"https://www.youtube.com/shorts/{video_id}",
-            headers=HEADERS,
-            allow_redirects=False,
-            timeout=20,
-        )
-        return r.status_code == 200
-    except Exception as e:
-        print(f"  ~ проверка на Shorts не удалась ({e}), считаем обычным видео")
-        return False
+def is_short(video_id: str, attempts: int = 2) -> bool:
+    """Shorts отдают 200 по адресу /shorts/<id>, обычные видео — редирект.
+    HEAD YouTube обрабатывает не всегда надёжно, поэтому используем GET
+    и логируем реальный код ответа, если результат не 200."""
+    last_status = None
+    for i in range(attempts):
+        try:
+            r = requests.get(
+                f"https://www.youtube.com/shorts/{video_id}",
+                headers=HEADERS,
+                allow_redirects=False,
+                timeout=20,
+                stream=True,
+            )
+            r.close()
+            if r.status_code == 200:
+                return True
+            last_status = r.status_code
+        except Exception as e:
+            print(f"  ~ проверка на Shorts не удалась ({e})")
+            last_status = f"ошибка: {e}"
+        if i < attempts - 1:
+            time.sleep(3)
+
+    print(f"  ~ /shorts/{video_id} вернул {last_status} — считаем обычным видео")
+    return False
 
 
 def paragraphize(text: str) -> str:
