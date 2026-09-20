@@ -391,19 +391,29 @@ def download_via_api(video_id: str):
         print("  ~ RAPIDAPI_KEY не задан — пропускаю RapidAPI, пробую yt-dlp")
         return None, None
 
-    try:
-        r = requests.get(
-            f"https://{RAPIDAPI_HOST}/youtube/v3/video/details",
-            params={"videoId": video_id, "urlAccess": "proxied",
-                    "getTranscript": "false"},
-            headers={"x-rapidapi-key": RAPIDAPI_KEY,
-                     "x-rapidapi-host": RAPIDAPI_HOST},
-            timeout=120,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        print(f"  ~ RapidAPI не ответил: {str(e)[:120]}")
+    last_err = None
+    for i in range(3):
+        try:
+            r = requests.get(
+                f"https://{RAPIDAPI_HOST}/youtube/v3/video/details",
+                params={"videoId": video_id, "urlAccess": "proxied",
+                        "getTranscript": "false"},
+                headers={"x-rapidapi-key": RAPIDAPI_KEY,
+                         "x-rapidapi-host": RAPIDAPI_HOST},
+                timeout=120,
+            )
+            r.raise_for_status()
+            data = r.json()
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            # 502/503/504 у самого RapidAPI обычно разовые — стоит переждать
+            if i < 2:
+                print(f"  ~ RapidAPI не ответил ({str(e)[:100]}), пробую через 5с")
+                time.sleep(5)
+    if last_err is not None:
+        print(f"  ~ RapidAPI не ответил: {str(last_err)[:120]}")
         return None, None
 
     contents = (data.get("contents") or [{}])[0]
