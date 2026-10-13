@@ -7,6 +7,11 @@
 
 Формат IG_ACCOUNTS:  ник:@телеграм_канал, ник2:@канал2
 Состояние — в state_instagram.json.
+
+Доп. функция: для аккаунта SUMMARY_IG_USER (по умолчанию thestudyofwar)
+после репоста делается краткая выжимка на русском через Gemini и уходит
+текстом в приватный канал SUMMARY_CHAT_ID. Если Gemini недоступен (лимиты,
+сбой), выжимка остаётся в очереди и уходит при следующем запуске.
 """
 
 import html
@@ -16,6 +21,7 @@ import pathlib
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -27,6 +33,38 @@ MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "3"))
 MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 FETCH_LIMIT = int(os.environ.get("IG_FETCH_LIMIT", "3"))   # сколько постов брать за заход
 KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
+
+# --- выжимки ISW (Gemini) ---
+SUMMARY_CHAT_ID = os.environ.get("SUMMARY_CHAT_ID", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash-lite"
+GEMINI_FALLBACKS = [
+    m.strip()
+    for m in (os.environ.get("GEMINI_FALLBACK_MODELS", "").strip() or "gemini-2.5-flash").split(",")
+    if m.strip()
+]
+SUMMARY_IG_USER = (
+    os.environ.get("SUMMARY_IG_USER", "").strip() or "thestudyofwar"
+).lstrip("@").lower()
+SUMMARY_MAX_AGE_HOURS = int(os.environ.get("SUMMARY_MAX_AGE_HOURS", "48"))
+SUMMARY_ENABLED = bool(SUMMARY_CHAT_ID and GEMINI_API_KEY)
+PENDING_KEY = "_summary_pending"
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+SUMMARY_PROMPT = (
+    "Ты редактор военных сводок. Тебе дают текст поста Института изучения войны (ISW). "
+    "Сделай краткую выжимку на русском языке.\n"
+    "Правила:\n"
+    "- Используй ТОЛЬКО факты из текста. Ничего не добавляй, не домысливай, не оценивай.\n"
+    "- Сохраняй числа, даты, названия населённых пунктов, формирований, имена и должности.\n"
+    "- Названия городов и сёл пиши общепринятым русским написанием.\n"
+    "- Заголовок: коротко, до 12 слов, суть сводки.\n"
+    "- Тезисы: от 3 до 5, каждый — одно предложение.\n"
+    "- Если в тексте нет военной или политической сводки (реклама, анонс, благодарность), "
+    "верни пустой список тезисов.\n"
+    'Ответ строго в JSON: {"title": "...", "points": ["...", "..."]}'
+)
 
 STATE_FILE = pathlib.Path("state_instagram.json")
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -352,6 +390,152 @@ def send_post(channel: str, post: dict) -> bool:
                 pass
 
 
+# ----------------------------- выжимки ISW -----------------------------
+
+def gemini_summarize(caption: str):
+    """Возвращает (статус, данные): 'ok' + {title, points}, 'empty' или 'fail'."""
+    body = {
+        "systemInstruction": {"parts": [{"text": SUMMARY_PROMPT}]},
+        "contents": [{"role": "user", "parts": [{"text": caption}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
+    }
+    models = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACKS if m != GEMINI_MODEL]
+
+    for model in models:
+        try:
+            r = requests.post(
+                f"{GEMINI_URL}/{model}:generateContent",
+                headers={
+                    "x-goog-api-key": GEMINI_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=120,
+            )
+        except requests.RequestException as e:
+            print(f"  ~ Gemini ({model}) не ответил: {e}", file=sys.stderr)
+            continue
+
+        if not r.ok:
+            print(f"  ~ Gemini ({model}) вернул {r.status_code}: {r.text[:300]}", file=sys.stderr)
+            continue
+
+        try:
+            data = r.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            obj = json.loads(text)
+            if not isinstance(obj, dict):
+                raise ValueError("ответ не объект")
+            title = str(obj.get("title", "")).strip()
+            points = [str(x).strip() for x in (obj.get("points") or []) if str(x).strip()]
+        except (KeyError, IndexError, ValueError, TypeError) as e:
+            print(f"  ~ Gemini ({model}) вернул непонятный ответ: {e}", file=sys.stderr)
+            continue
+
+        if not points:
+            return "empty", None
+        print(f"  выжимка готова (модель {model})")
+        return "ok", {"title": title, "points": points[:5]}
+
+    return "fail", None
+
+
+def build_summary_html(summary: dict, url: str) -> str:
+    lines = []
+    if summary["title"]:
+        lines.append(f"<b>{html.escape(summary['title'][:200], quote=False)}</b>")
+        lines.append("")
+    for p in summary["points"]:
+        lines.append("• " + html.escape(p[:600], quote=False))
+    lines.append("")
+    lines.append(f'<a href="{html.escape(url, quote=True)}">Оригинал в Instagram</a>')
+    return "\n".join(lines)
+
+
+def send_summary(text: str) -> bool:
+    r = requests.post(
+        f"{TG_API}/sendMessage",
+        data={
+            "chat_id": SUMMARY_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        },
+        timeout=60,
+    )
+    if not (r.ok and r.json().get("ok")):
+        print(f"  ! выжимка не ушла в Telegram: {r.text[:250]}", file=sys.stderr)
+        return False
+    return True
+
+
+def enqueue_summary(state: dict, post: dict, user: str) -> None:
+    caption = clean_caption(post["caption"])
+    if not caption:
+        print(f"[{user}] у поста {post['id']} нет подписи — выжимку не делаем")
+        return
+    queue = state.setdefault(PENDING_KEY, [])
+    queue.append(
+        {
+            "id": post["id"],
+            "url": post["url"] or f"https://www.instagram.com/{user}/",
+            "caption": caption,
+            "queued": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+def process_summaries(state: dict) -> None:
+    """Разбирает очередь выжимок. При сбое Gemini оставляет посты до следующего запуска."""
+    if not SUMMARY_ENABLED:
+        return
+    queue = state.get(PENDING_KEY) or []
+    if not queue:
+        return
+
+    print(f"=== выжимки: в очереди {len(queue)} ===")
+    now = datetime.now(timezone.utc)
+    left = []
+    blocked = False
+
+    for i, item in enumerate(queue):
+        if blocked:
+            left.append(item)
+            continue
+
+        try:
+            queued = datetime.fromisoformat(item["queued"])
+            if (now - queued) > timedelta(hours=SUMMARY_MAX_AGE_HOURS):
+                print(f"  пост {item['id']} ждал дольше {SUMMARY_MAX_AGE_HOURS} ч — выжимку отбрасываем")
+                continue
+        except (KeyError, ValueError):
+            pass
+
+        print(f"  выжимка для поста {item['id']}")
+        status, summary = gemini_summarize(item["caption"])
+        if status == "fail":
+            print("  ~ Gemini недоступен или лимиты — повторим при следующем запуске")
+            left.append(item)
+            blocked = True
+            continue
+        if status == "empty":
+            print("  в тексте нет сводки — пропускаем")
+            continue
+
+        if send_summary(build_summary_html(summary, item["url"])):
+            print("  выжимка отправлена")
+        else:
+            left.append(item)
+
+        if i < len(queue) - 1:
+            time.sleep(7)   # бесплатный лимит по запросам в минуту
+
+    state[PENDING_KEY] = left
+
+
 def process(user: str, channel: str, token: str, limit: int, state: dict) -> bool:
     """Возвращает False, если не удалось даже получить посты (для алертов)."""
     try:
@@ -385,6 +569,8 @@ def process(user: str, channel: str, token: str, limit: int, state: dict) -> boo
         print(f"[{user}] новый пост {p['id']} ({p['type']}) -> {channel}")
         if send_post(channel, p):
             remember(state, user, p["id"])
+            if SUMMARY_ENABLED and user.lower() == SUMMARY_IG_USER:
+                enqueue_summary(state, p, user)
             save_state(state)
     return True
 
@@ -401,6 +587,13 @@ def main() -> None:
             total += 1
             if process(user, channel, token, limit, state):
                 ok += 1
+
+    try:
+        process_summaries(state)
+    except Exception as e:
+        # выжимки не должны ронять основной репост
+        print(f"выжимки: непредвиденная ошибка: {e}", file=sys.stderr)
+
     save_state(state)
     print("готово")
     if total and ok == 0:
