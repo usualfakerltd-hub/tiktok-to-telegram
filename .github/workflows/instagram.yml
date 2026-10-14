@@ -35,8 +35,8 @@ jobs:
           MAX_AGE_DAYS: '7'
           IG_FETCH_LIMIT: '5'
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          SUMMARY_CHAT_ID: ${{ vars.SUMMARY_CHAT_ID }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          SUMMARY_CHAT_ID: ${{ secrets.SUMMARY_CHAT_ID }}
         run: python instagram.py
 
       - name: Commit state
