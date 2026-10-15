@@ -37,10 +37,10 @@ KEEP_HISTORY = int(os.environ.get("KEEP_HISTORY", "300"))
 # --- выжимки ISW (Gemini) ---
 SUMMARY_CHAT_ID = os.environ.get("SUMMARY_CHAT_ID", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash-lite"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-3.5-flash-lite"
 GEMINI_FALLBACKS = [
     m.strip()
-    for m in (os.environ.get("GEMINI_FALLBACK_MODELS", "").strip() or "gemini-2.5-flash").split(",")
+    for m in (os.environ.get("GEMINI_FALLBACK_MODELS", "").strip() or "gemini-3.8-flash").split(",")
     if m.strip()
 ]
 SUMMARY_IG_USER = (
@@ -569,8 +569,11 @@ def process(user: str, channel: str, token: str, limit: int, state: dict) -> boo
         print(f"[{user}] новый пост {p['id']} ({p['type']}) -> {channel}")
         if send_post(channel, p):
             remember(state, user, p["id"])
-            if SUMMARY_ENABLED and user.lower() == SUMMARY_IG_USER:
-                enqueue_summary(state, p, user)
+            if user.lower() == SUMMARY_IG_USER:
+                if SUMMARY_ENABLED:
+                    enqueue_summary(state, p, user)
+                else:
+                    print(f"[{user}] выжимки выключены — настройки не дошли до скрипта")
             save_state(state)
     return True
 
@@ -580,6 +583,13 @@ def main() -> None:
         print("IG_ACCOUNTS / APIFY_TOKEN не заданы — нечего делать")
         return
     state = load_state()
+    print(
+        "выжимки: "
+        + ("ВКЛЮЧЕНЫ" if SUMMARY_ENABLED else "ВЫКЛЮЧЕНЫ")
+        + f" | SUMMARY_CHAT_ID: {'задан, длина ' + str(len(SUMMARY_CHAT_ID)) if SUMMARY_CHAT_ID else 'ПУСТО'}"
+        + f" | GEMINI_API_KEY: {'задан' if GEMINI_API_KEY else 'ПУСТО'}"
+        + f" | модель: {GEMINI_MODEL}"
+    )
     ok, total = 0, 0
     for i, (accounts, token) in enumerate(GROUPS, 1):
         print(f"=== набор {i}: аккаунтов {len(accounts)} ===")
