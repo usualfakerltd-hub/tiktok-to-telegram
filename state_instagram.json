@@ -100,6 +100,7 @@
     "3665533869541879277"
   ],
   "thestudyofwar": [
+    "4036877215903061648",
     "4036320652613321988",
     "4036245210816551182",
     "4035621906833437217",
@@ -398,8 +399,7 @@
     "3965300321068994405",
     "3964553149726892246",
     "3963899443657101036",
-    "3963858111702078590",
-    "3963676906218081603"
+    "3963858111702078590"
   ],
   "v.vatsko": [
     "4034618140523091373",
@@ -420,5 +420,12 @@
     "3952779875235363620",
     "3954698970135066284"
   ],
-  "_summary_pending": []
+  "_summary_pending": [
+    {
+      "id": "4036877215903061648",
+      "url": "https://www.instagram.com/p/DgF3nCHxRaQ/",
+      "caption": "VIDEO: Russian sources are using AI videos to inflate battlefield gains while its military is only marginally advancing. ISW’s Daniel Mealie explains anomalies in several videos posted by Russian milbloggers, and objectives behind this aspect of Russia’s cognitive warfare campaign.\n\nRead the full report about Russia’s AI integration on ISW’s website.",
+      "queued": "2026-11-23T22:03:46.619668+00:00"
+    }
+  ]
 }
